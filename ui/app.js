@@ -1,0 +1,527 @@
+import { api } from "./api.js";
+import * as nav from "./nav.js";
+
+const $ = (s, r = document) => r.querySelector(s);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+let snap = null;
+let sel = 0;
+const sheets = []; // stack of open sheets: "mods" | "catalog" | "game" | "launcher"
+let openSheet = null; // top of the stack
+let overlayState = null; // { game, phase }
+const modsCache = {};
+
+const RESOLUTIONS = ["1280x720", "1280x800", "1366x768", "1600x900", "1920x1080", "1920x1200", "2560x1080", "2560x1440", "2560x1600", "3440x1440", "3840x2160"];
+(() => {
+  const native = `${Math.round(screen.width * devicePixelRatio)}x${Math.round(screen.height * devicePixelRatio)}`;
+  if (!RESOLUTIONS.includes(native)) RESOLUTIONS.push(native);
+  RESOLUTIONS.sort((a, b) => a.split("x")[0] * a.split("x")[1] - b.split("x")[0] * b.split("x")[1]);
+  RESOLUTIONS.native = native;
+})();
+
+const game = () => snap.games[sel];
+const isRunning = (id) => snap.running.includes(id);
+const resText = (r) => (r ? `${r.width}x${r.height}` : "");
+
+// ---------------------------------------------------------------- helpers
+
+let toastTimer;
+function toast(msg, error = false) {
+  const t = $("#toast");
+  t.textContent = msg;
+  t.className = "toast" + (error ? " error" : "");
+  t.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => (t.hidden = true), error ? 6000 : 2600);
+}
+
+async function act(fn, okMsg) {
+  try {
+    const result = await fn();
+    if (result && result.games) snap = result;
+    render();
+    if (okMsg) toast(okMsg);
+    return true;
+  } catch (e) {
+    toast(String(e?.message ?? e), true);
+    return false;
+  }
+}
+
+async function loadMods(id, force = false) {
+  if (force || !modsCache[id]) modsCache[id] = await api.call("list_mods", { game: id });
+  return modsCache[id];
+}
+
+function modName(g) {
+  if (!g.selected_mod) return "Vanilla";
+  return modsCache[g.id]?.find((m) => m.id === g.selected_mod)?.name ?? g.selected_mod.split(":")[1];
+}
+
+// ---------------------------------------------------------------- main screen
+
+function buildShelf() {
+  const shelf = $("#shelf");
+  shelf.innerHTML = snap.games
+    .map(
+      (g, i) => `
+      <button class="nav tile" data-group="shelf" data-game="${g.id}" data-index="${i}">
+        <svg class="emblem" viewBox="0 0 120 120"><use href="#emblem-${g.id}"/></svg>
+        <span><span class="t-short">${esc(g.short)}</span><span class="t-state"><span class="dot"></span><span class="t-text"></span></span></span>
+      </button>`
+    )
+    .join("");
+  shelf.querySelectorAll(".tile").forEach((tile) => {
+    const i = Number(tile.dataset.index);
+    tile.addEventListener("focus", () => select(i));
+    tile.addEventListener("click", () => (sel === i ? nav.focus($("#btn-play")) : select(i)));
+  });
+}
+
+function select(i) {
+  if (i === sel && document.body.dataset.accent === game().id) return;
+  sel = (i + snap.games.length) % snap.games.length;
+  render();
+  loadMods(game().id).then(renderHero).catch(() => {});
+}
+
+function renderShelf() {
+  document.querySelectorAll(".tile").forEach((tile) => {
+    const g = snap.games[Number(tile.dataset.index)];
+    tile.classList.toggle("selected", g === game());
+    tile.classList.toggle("is-ready", g.ready);
+    tile.classList.toggle("is-missing", !g.installed);
+    tile.querySelector(".t-text").textContent = isRunning(g.id) ? "Running" : g.ready ? "Ready" : g.installed ? "Needs attention" : "Not found";
+  });
+}
+
+function renderHero() {
+  const g = game();
+  document.body.dataset.accent = g.id;
+  $("#hero-title").textContent = g.title;
+  $("#hero-emblem").setAttribute("href", `#emblem-${g.id}`);
+  const running = isRunning(g.id);
+  const chips = [];
+  if (running) chips.push(`<span class="chip run"><span class="dot"></span>Running</span>`);
+  else if (g.ready) chips.push(`<span class="chip ok"><span class="dot"></span>Ready</span>`);
+  else chips.push(`<span class="chip bad"><span class="dot"></span>${g.installed ? "Needs attention" : "Not found"}</span>`);
+  if (g.runner) chips.push(`<span class="chip">${esc(g.runner.name)}</span>`);
+  chips.push(`<span class="chip">${g.resolution ? resText(g.resolution) : "Game's resolution"}${g.windowed ? " · windowed" : ""}</span>`);
+  $("#hero-chips").innerHTML = chips.join("");
+
+  const err = g.issues.find((i) => i.level === "error");
+  const warn = g.issues.find((i) => i.level === "warn");
+  const issue = $("#hero-issue");
+  issue.hidden = !(err || warn);
+  issue.innerHTML = err ? `<strong>Can't start yet.</strong> ${esc(err.message)}` : warn ? esc(warn.message) : "";
+
+  const play = $("#btn-play");
+  const label = $("#play-label");
+  if (!g.installed) {
+    label.textContent = "Locate game folder";
+    play.disabled = false;
+  } else {
+    label.textContent = running ? "Running…" : "Play";
+    play.disabled = running || !g.ready;
+  }
+  $("#mods-label").textContent = modName(g);
+}
+
+function renderHints(pad = renderHints.pad) {
+  renderHints.pad = pad;
+  const h = (glyph, cls, text) => `<span class="hint"><span class="glyph ${cls}">${glyph}</span>${text}</span>`;
+  const rows = pad
+    ? [h("A", "a", "Select"), h("B", "b", "Back"), h("X", "x", "Game settings"), h("Y", "y", "Mods"), `<span class="hint"><span class="glyph">LB</span><span class="glyph">RB</span>Switch game</span>`, h("☰", "", "Play")]
+    : [h("Enter", "key", "Select"), h("Esc", "key", "Back"), h("S", "key", "Game settings"), h("M", "key", "Mods"), `<span class="hint"><span class="glyph key">Q</span><span class="glyph key">E</span>Switch game</span>`];
+  $("#hints").innerHTML = rows.join("");
+}
+
+function render() {
+  if (!snap) return;
+  renderShelf();
+  renderHero();
+  // Only the top sheet re-renders; ones underneath refresh when uncovered.
+  if (openSheet === "mods") renderModsSheet();
+  if (openSheet === "catalog") renderCatalogSheet();
+  if (openSheet === "game") renderGameSheet();
+  if (openSheet === "launcher") renderLauncherSheet();
+}
+
+// ---------------------------------------------------------------- actions
+
+async function play() {
+  const g = game();
+  if (!g.installed) return locate(g);
+  if (!g.ready || isRunning(g.id)) return;
+  try {
+    await api.call("launch", { game: g.id, modId: null });
+  } catch (e) {
+    toast(String(e?.message ?? e), true);
+  }
+}
+
+async function locate(g) {
+  const path = await api.call("pick_folder");
+  if (path) await act(() => api.call("set_game_path", { game: g.id, path }), `${g.short} folder set`);
+}
+
+// ---------------------------------------------------------------- sheets
+
+function rowHTML({ key, label, sub = "", value = "", cycle = false, selected = false, tick = false, badge = "", extra = "" }) {
+  return `<button class="nav row${selected ? " selected" : ""}" data-key="${esc(key)}"${cycle ? " data-cycle" : ""}>
+    <span style="min-width:0"><span class="label">${esc(label)}</span>${sub ? `<span class="sub">${esc(sub)}</span>` : ""}</span>
+    <span class="value">${badge ? `<span class="badge">${esc(badge)}</span>` : ""}${cycle ? `<span class="arrows">◂</span>${esc(value)}<span class="arrows">▸</span>` : esc(value)}${tick ? `<svg class="tick" viewBox="0 0 24 24"><use href="#i-check"/></svg>` : ""}${extra}</span>
+  </button>`;
+}
+
+function fieldHTML({ key, label, placeholder = "", value = "", help = "" }) {
+  return `<div class="nav field" data-key="${esc(key)}" tabindex="-1">
+    <label for="f-${esc(key)}">${esc(label)}</label>
+    <input id="f-${esc(key)}" type="text" autocomplete="off" spellcheck="false" placeholder="${esc(placeholder)}" value="${esc(value)}">
+    ${help ? `<span class="help">${esc(help)}</span>` : ""}
+  </div>`;
+}
+
+function open(name, el) {
+  sheets.push(name);
+  openSheet = name;
+  render();
+  nav.pushLayer(el);
+}
+
+// Mods
+function renderModsSheet() {
+  const g = game();
+  const sheet = $("#sheet-mods");
+  sheet.querySelector("[data-game-short]").textContent = g.title;
+  const mods = modsCache[g.id] || [];
+  const keep = nav.current()?.dataset.key;
+  let html = rowHTML({ key: "vanilla", label: "Vanilla", sub: "The game as it shipped", selected: !g.selected_mod, tick: !g.selected_mod });
+  for (const m of mods) {
+    const row = rowHTML({ key: m.id, label: m.name, sub: m.path, badge: m.kind === "launcher" ? "Launcher" : "", selected: g.selected_mod === m.id, tick: g.selected_mod === m.id });
+    html += m.in_library
+      ? row
+      : `<div class="mod-line">${row}<button class="nav remove" data-key="rm:${esc(m.id)}" aria-label="Remove ${esc(m.name)}"><svg viewBox="0 0 24 24"><use href="#i-x"/></svg></button></div>`;
+  }
+  if (!mods.length) html += `<p class="section-label">No mods yet — add a .big file, a mod folder, or a mod's own launcher.</p>`;
+  const rows = $("#mods-rows");
+  rows.innerHTML = html;
+  rows.querySelectorAll(".row").forEach((r) =>
+    r.addEventListener("click", async () => {
+      const id = r.dataset.key === "vanilla" ? null : r.dataset.key;
+      if (await act(() => api.call("select_mod", { game: g.id, id }))) {
+        closeAllSheets();
+        toast(id ? `${modName(game())} selected` : "Playing vanilla");
+      }
+    })
+  );
+  rows.querySelectorAll(".remove").forEach((b) =>
+    b.addEventListener("click", async () => {
+      const id = b.dataset.key.slice(3);
+      await act(() => api.call("remove_mod", { id }), "Mod removed");
+      await loadMods(g.id, true);
+      renderModsSheet();
+    })
+  );
+  nav.refocus(keep ? `[data-key="${CSS.escape(keep)}"]` : null);
+}
+
+// Catalog of known mods
+let catalogCache = {};
+async function openCatalog() {
+  catalogCache[game().id] = await api.call("get_catalog", { game: game().id });
+  open("catalog", $("#sheet-catalog"));
+}
+
+function renderCatalogSheet() {
+  const g = game();
+  $("#sheet-catalog").querySelector("[data-game-short]").textContent = g.title;
+  const items = catalogCache[g.id] || [];
+  const keep = nav.current()?.dataset.key;
+  const section = (title, list) =>
+    list.length
+      ? `<p class="section-label">${title}</p>` +
+        list
+          .map((it) =>
+            rowHTML({
+              key: it.id,
+              label: it.name,
+              sub: it.blurb,
+              badge: it.installed ? "Installed" : it.kind === "patch" ? "Patch" : "",
+              value: it.installed ? (g.selected_mod === it.installed ? "" : "Use") : "Get",
+              tick: g.selected_mod === it.installed && !!it.installed,
+              selected: !!it.installed,
+            })
+          )
+          .join("")
+      : "";
+  const rows = $("#catalog-rows");
+  rows.innerHTML =
+    section("Mods", items.filter((i) => i.kind === "mod")) +
+    section("Community patches", items.filter((i) => i.kind === "patch")) +
+    `<p class="section-label" style="text-transform:none;letter-spacing:0;font-weight:400">“Get” opens the mod's page. Once it's downloaded, add it from Mods — or run its installer from Game settings.</p>`;
+  rows.querySelectorAll(".row").forEach((r) =>
+    r.addEventListener("click", async () => {
+      const it = items.find((i) => i.id === r.dataset.key);
+      if (it.installed) {
+        if (await act(() => api.call("select_mod", { game: g.id, id: it.installed }))) {
+          closeAllSheets();
+          toast(`${it.name} selected`);
+        }
+      } else if (await act(() => api.call("open_url", { url: it.url }))) {
+        toast(`Opened ${it.name} in your browser`);
+      }
+    })
+  );
+  nav.refocus(keep ? `[data-key="${CSS.escape(keep)}"]` : null);
+}
+
+async function findMods() {
+  try {
+    const [next, added] = await api.call("find_mods");
+    snap = next;
+    await Promise.all(snap.games.map((x) => loadMods(x.id, true)));
+    if (openSheet === "catalog") catalogCache[game().id] = await api.call("get_catalog", { game: game().id });
+    render();
+    toast(added ? `Found ${added} mod${added > 1 ? "s" : ""}` : "No new mods found");
+  } catch (e) {
+    toast(String(e?.message ?? e), true);
+  }
+}
+
+async function addMod(kind) {
+  const g = game();
+  const path = kind === "folder" ? await api.call("pick_folder") : await api.call("pick_file", { kind: "mod" });
+  if (!path) return;
+  if (await act(() => api.call("add_mod", { game: g.id, path, name: null }), "Mod added and selected")) {
+    await loadMods(g.id, true);
+    render();
+  }
+}
+
+// Game settings
+function renderGameSheet() {
+  const g = game();
+  const sheet = $("#sheet-game");
+  sheet.querySelector("[data-game-title]").textContent = g.title;
+  const keep = nav.current()?.dataset.key;
+  const runnerName = g.runner ? (g.runner_choice ? g.runner.name : `Automatic (${g.runner.name})`) : "None found";
+  const res = resText(g.resolution);
+  const rows = $("#game-rows");
+  rows.innerHTML = [
+    `<p class="section-label">Install</p>`,
+    rowHTML({ key: "folder", label: "Game folder", sub: g.path || "Not set", value: "Change" }),
+    fieldHTML({
+      key: "cdkey",
+      label: "CD key",
+      placeholder: g.has_cd_key ? "Saved — type a new one to replace it" : "Key from your copy of the game",
+      help: "Stored in this game's own Wine prefix, the way the original installer did.",
+    }),
+    `<p class="section-label">Compatibility</p>`,
+    rowHTML({ key: "runner", label: "Runner", sub: "Wine or Proton build used for this game", value: runnerName, cycle: true }),
+    `<p class="section-label">Display</p>`,
+    rowHTML({ key: "res", label: "Resolution", sub: res === RESOLUTIONS.native ? "Matches this screen" : "Written to Options.ini before each launch", value: res || "Game's setting", cycle: true }),
+    rowHTML({ key: "windowed", label: "Windowed", sub: "Adds -win", extra: `<span class="toggle${g.windowed ? " on" : ""}"></span>` }),
+    fieldHTML({ key: "args", label: "Extra arguments", placeholder: "-noshellmap", value: g.extra_args }),
+    `<p class="section-label">Tools</p>`,
+    `<button class="nav row-btn" data-key="installer"><svg viewBox="0 0 24 24"><use href="#i-plus"/></svg>Run a patch or installer in this game's prefix</button>`,
+    `<button class="nav row-btn" data-key="log"><svg viewBox="0 0 24 24"><use href="#i-scroll"/></svg>Open log</button>`,
+    `<button class="nav row-btn" data-key="openfolder"><svg viewBox="0 0 24 24"><use href="#i-open"/></svg>Open game folder</button>`,
+    `<div class="cmd" id="cmd-preview">…</div>`,
+  ].join("");
+
+  const on = (key, ev, fn) => rows.querySelector(`[data-key="${key}"]`)?.addEventListener(ev, fn);
+  on("folder", "click", () => locate(g));
+  on("runner", "cycle", (e) => {
+    const ids = [null, ...snap.runners.map((r) => r.id)];
+    const cur = Math.max(0, ids.indexOf(g.runner_choice ?? null));
+    const next = ids[(cur + e.detail + ids.length) % ids.length];
+    act(() => api.call("set_runner", { game: g.id, runner: next }));
+  });
+  on("runner", "click", (e) => e.currentTarget.dispatchEvent(new CustomEvent("cycle", { detail: 1 })));
+  on("res", "cycle", (e) => {
+    const opts = ["", ...RESOLUTIONS];
+    const i = (opts.indexOf(res) + e.detail + opts.length) % opts.length;
+    saveDisplay({ resolution: opts[i] });
+  });
+  on("res", "click", (e) => e.currentTarget.dispatchEvent(new CustomEvent("cycle", { detail: 1 })));
+  on("windowed", "click", () => saveDisplay({ windowed: !g.windowed }));
+  const key = rows.querySelector("#f-cdkey");
+  key.addEventListener("change", () => act(() => api.call("set_cd_key", { game: g.id, key: key.value }), key.value.trim() ? "CD key saved" : "CD key cleared"));
+  const args = rows.querySelector("#f-args");
+  args.addEventListener("change", () => saveDisplay({ extraArgs: args.value }));
+  on("installer", "click", async () => {
+    const path = await api.call("pick_file", { kind: "exe" });
+    if (path) await act(() => api.call("run_installer", { game: g.id, path }));
+  });
+  on("log", "click", () => act(() => api.call("open_log", { game: g.id })));
+  on("openfolder", "click", () => g.path && act(() => api.call("open_path", { path: g.path })));
+
+  api
+    .call("launch_preview", { game: g.id, modId: null })
+    .then((s) => ($("#cmd-preview").textContent = s))
+    .catch((e) => ($("#cmd-preview").textContent = String(e?.message ?? e)));
+  nav.refocus(keep ? `[data-key="${CSS.escape(keep)}"]` : null);
+}
+
+function saveDisplay(change) {
+  const g = game();
+  const next = { resolution: resText(g.resolution), windowed: g.windowed, extraArgs: g.extra_args, ...change };
+  return act(() => api.call("set_display", { game: g.id, ...next }));
+}
+
+// Launcher settings
+function renderLauncherSheet() {
+  const keep = nav.current()?.dataset.key;
+  const def = snap.runners.find((r) => r.id === snap.default_runner);
+  const best = snap.runners.find((r) => r.id === snap.best_runner);
+  const rows = $("#launcher-rows");
+  rows.innerHTML = [
+    `<p class="section-label">Games</p>`,
+    `<button class="nav row-btn" data-key="scan"><svg viewBox="0 0 24 24"><use href="#i-scan"/></svg>Find installed games</button>`,
+    `<p class="section-label">Default runner</p>`,
+    rowHTML({ key: "defrunner", label: "Runner for all games", sub: "Each game can override this", value: def ? def.name : `Automatic${best ? ` (${best.name})` : ""}`, cycle: true }),
+    `<p class="section-label">Runners found</p>`,
+    ...(snap.runners.length
+      ? snap.runners.map((r) => `<div class="row" style="cursor:default"><span style="min-width:0"><span class="label">${esc(r.name)}</span><span class="sub">${esc(r.path)}</span></span><span class="badge">${esc(r.kind)}</span></div>`)
+      : [`<p class="section-label">None — install GE-Proton (ProtonPlus or ProtonUp-Qt), umu-launcher, or Wine.</p>`]),
+    `<p class="section-label">Storage</p>`,
+    `<button class="nav row-btn" data-key="data"><svg viewBox="0 0 24 24"><use href="#i-folder"/></svg>Open Beacon's data folder (prefixes, mods, logs)</button>`,
+    `<p class="section-label">About</p>`,
+    `<div class="row" style="cursor:default"><span><span class="label">Beacon ${esc(snap.version)}</span><span class="sub">Not affiliated with EA or the Tolkien Estate. Bring your own copy of the games.</span></span></div>`,
+  ].join("");
+  const on = (key, ev, fn) => rows.querySelector(`[data-key="${key}"]`)?.addEventListener(ev, fn);
+  on("scan", "click", scan);
+  on("defrunner", "cycle", (e) => {
+    const ids = [null, ...snap.runners.map((r) => r.id)];
+    const next = ids[(ids.indexOf(snap.default_runner) + e.detail + ids.length) % ids.length];
+    act(() => api.call("set_runner", { game: null, runner: next }));
+  });
+  on("defrunner", "click", (e) => e.currentTarget.dispatchEvent(new CustomEvent("cycle", { detail: 1 })));
+  on("data", "click", () => act(() => api.call("open_path", { path: snap.data_dir })));
+  nav.refocus(keep ? `[data-key="${CSS.escape(keep)}"]` : null);
+}
+
+async function scan() {
+  const before = snap.games.filter((g) => g.installed).length;
+  if (await act(() => api.call("scan"))) {
+    const after = snap.games.filter((g) => g.installed).length;
+    toast(after > before ? `Found ${after - before} more game${after - before > 1 ? "s" : ""}` : after ? "Up to date" : "No games found — set each folder in Game settings");
+  }
+}
+
+function closeAllSheets() {
+  while (openSheet) closeSheet();
+}
+
+function closeSheet() {
+  if (!openSheet) return;
+  sheets.pop();
+  openSheet = sheets.at(-1) ?? null;
+  nav.popLayer();
+  render();
+}
+
+// ---------------------------------------------------------------- launch overlay
+
+function showOverlay({ title, text, error = false, ok = false }) {
+  const o = $("#overlay");
+  $("#overlay-title").textContent = title;
+  $("#overlay-text").textContent = text || "";
+  o.classList.toggle("error", error);
+  $("#overlay-ok").hidden = !ok;
+  if (o.hidden) nav.pushLayer(o, ok ? $("#overlay-ok") : null);
+  else if (ok) nav.focus($("#overlay-ok"));
+}
+
+function hideOverlay() {
+  if ($("#overlay").hidden) return;
+  overlayState = null;
+  nav.popLayer();
+}
+
+async function onGameEvent({ game: id, phase, message }) {
+  const g = snap.games.find((x) => x.id === id);
+  const short = g?.short ?? id;
+  overlayState = { game: id, phase };
+  if (phase === "preparing") {
+    snap.running = [...new Set([...snap.running, id])];
+    showOverlay({ title: "Lighting the beacon…", text: `Getting ${short} ready. The first launch builds its Wine prefix, which can take a minute.` });
+  } else if (phase === "running") {
+    showOverlay({ title: `${short} is running`, text: "Beacon will be right here when you're done." });
+  } else {
+    snap = await api.call("get_state");
+    if (phase === "error" || message) showOverlay({ title: phase === "error" ? `${short} couldn't start` : `${short} closed`, text: message || "", error: true, ok: true });
+    else hideOverlay();
+  }
+  render();
+}
+
+// ---------------------------------------------------------------- wiring
+
+nav.onBack(() => {
+  if (!$("#overlay").hidden) {
+    if (!$("#overlay-ok").hidden) hideOverlay();
+    return;
+  }
+  closeSheet();
+});
+
+nav.onShortcut((b) => {
+  if (!$("#overlay").hidden) return;
+  if (b === "lb" || b === "rb") {
+    if (openSheet) return;
+    select(sel + (b === "lb" ? -1 : 1));
+    const tile = document.querySelector(`.tile[data-index="${sel}"]`);
+    if (nav.current()?.classList.contains("tile")) nav.focus(tile);
+  } else if (b === "x") {
+    if (openSheet === "game") closeSheet();
+    else if (!openSheet) open("game", $("#sheet-game"));
+  } else if (b === "y") {
+    if (openSheet === "mods") closeSheet();
+    else if (!openSheet) loadMods(game().id).then(() => open("mods", $("#sheet-mods")));
+  } else if (b === "start" && !openSheet) play();
+  else if (b === "select") {
+    if (openSheet === "launcher") closeSheet();
+    else if (!openSheet) open("launcher", $("#sheet-launcher"));
+  }
+});
+
+nav.onInputChange(renderHints);
+
+$("#btn-play").addEventListener("click", play);
+$("#btn-mods").addEventListener("click", () => loadMods(game().id).then(() => open("mods", $("#sheet-mods"))));
+$("#btn-game-settings").addEventListener("click", () => open("game", $("#sheet-game")));
+$("#btn-launcher-settings").addEventListener("click", () => open("launcher", $("#sheet-launcher")));
+$("#btn-scan").addEventListener("click", scan);
+$("#btn-add-mod-file").addEventListener("click", () => addMod("file"));
+$("#btn-add-mod-folder").addEventListener("click", () => addMod("folder"));
+$("#btn-catalog").addEventListener("click", openCatalog);
+$("#btn-find-mods").addEventListener("click", findMods);
+$("#btn-catalog-add").addEventListener("click", () => addMod("file"));
+$("#btn-catalog-find").addEventListener("click", findMods);
+$("#btn-open-mods").addEventListener("click", () => act(() => api.call("open_path", { path: `${snap.mods_dir}/${game().id}` })));
+$("#overlay-ok").addEventListener("click", hideOverlay);
+// Clicking the dimmed area left of a sheet closes it.
+document.addEventListener("pointerdown", (e) => {
+  if (openSheet && !e.target.closest(".sheet") && !e.target.closest("#overlay")) closeSheet();
+});
+
+function tick() {
+  $("#clock").textContent = new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
+(async function init() {
+  snap = await api.call("get_state");
+  // Start on the first installed game.
+  sel = Math.max(0, snap.games.findIndex((g) => g.installed));
+  buildShelf();
+  renderHints(false);
+  render();
+  await Promise.all(snap.games.map((g) => loadMods(g.id).catch(() => [])));
+  render();
+  nav.focus($("#btn-play"));
+  api.on("game-event", onGameEvent);
+  tick();
+  setInterval(tick, 15000);
+})();

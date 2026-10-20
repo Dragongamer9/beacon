@@ -1,0 +1,16 @@
+[package]
+name = "beacon-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Command-line front end for Beacon"
+
+[[bin]]
+name = "beacon"
+path = "src/main.rs"
+
+[dependencies]
+beacon-core = { path = "../beacon-core" }
+anyhow.workspace = true
+serde_json.workspace = true
+clap = { version = "4", features = ["derive"] }
