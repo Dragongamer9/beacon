@@ -56,6 +56,11 @@ pub struct GameStatus {
     pub windowed: bool,
     pub extra_args: String,
     pub prefix_ready: bool,
+    /// Wine virtual desktop on (non-BFME games).
+    pub virtual_desktop: bool,
+    /// Steam app id, when the game is installed in a Steam library.
+    pub steam_appid: Option<u32>,
+    pub via_steam: bool,
     pub selected_mod: Option<String>,
     /// Extra exe the game ships (AotR's own launcher, for updates).
     pub tool_launcher: Option<PathBuf>,
@@ -188,6 +193,12 @@ impl Beacon {
         if g.wants_cd_key() && cfg.cd_key.as_deref().map(str::trim).unwrap_or("").is_empty() {
             issues.push(Issue { level: Level::Warn, message: "No CD key set. Add the key from your copy if the game asks you to reinstall.".into() });
         }
+        if g == GameId::Uaw && installed && !self.game_dir(g).map(|d| d.join("xlive.dll").is_file() || d.join("XLive.dll").is_file()).unwrap_or(false) {
+            issues.push(Issue {
+                level: Level::Warn,
+                message: "Games for Windows Live is gone: put the community xliveless xlive.dll in the game folder (campaign and skirmish only).".into(),
+            });
+        }
         let selected_mod = self.config.selected_mod.get(&g).cloned().filter(|id| self.find_mod(g, id).is_some());
         GameStatus {
             id: g,
@@ -203,11 +214,29 @@ impl Beacon {
             windowed: cfg.windowed,
             extra_args: cfg.extra_args.clone(),
             prefix_ready: self.paths.prefix_root(g).join("pfx/drive_c").is_dir(),
+            virtual_desktop: self.virtual_desktop(g),
+            steam_appid: self.steam_appid(g),
+            via_steam: self.via_steam(g),
             selected_mod,
             tool_launcher: if g == GameId::Aotr { self.aotr_bundled().launcher } else { None },
             ready: !issues.iter().any(|i| i.level == Level::Error),
             issues,
         }
+    }
+
+    /// Steam app id if this copy sits in a Steam library.
+    pub fn steam_appid(&self, g: GameId) -> Option<u32> {
+        let dir = self.game(g).path?;
+        let in_steam = dir.components().any(|c| c.as_os_str().eq_ignore_ascii_case("steamapps"));
+        g.steam_appid().filter(|_| in_steam)
+    }
+
+    pub fn via_steam(&self, g: GameId) -> bool {
+        self.game(g).via_steam && self.steam_appid(g).is_some()
+    }
+
+    pub fn virtual_desktop(&self, g: GameId) -> bool {
+        !g.is_sage() && self.game(g).virtual_desktop.unwrap_or_else(|| g.default_virtual_desktop())
     }
 
     pub fn statuses(&self) -> Vec<GameStatus> {
@@ -392,7 +421,7 @@ impl Beacon {
     /// Create the prefix if needed and import the registry keys.
     /// Returns true if it did any work.
     pub fn setup(&self, g: GameId, force: bool) -> Result<bool> {
-        if !force && !self.needs_setup(g)? {
+        if self.via_steam(g) || (!force && !self.needs_setup(g)?) {
             return Ok(false);
         }
         let cmd = self.setup_command(g)?;
@@ -414,6 +443,9 @@ impl Beacon {
 
     /// Write the chosen resolution into Options.ini inside the prefix.
     pub fn apply_options(&self, g: GameId) -> Result<Option<PathBuf>> {
+        if g == GameId::Uaw {
+            return self.fix_uaw_dx10();
+        }
         if !g.is_sage() {
             return Ok(None);
         }
@@ -428,6 +460,20 @@ impl Beacon {
         let current = std::fs::read_to_string(&file).unwrap_or_default();
         std::fs::write(&file, options_ini::set_value(&current, "Resolution", &res.ini_value()))?;
         Ok(Some(file))
+    }
+
+    /// UaW's DX10 renderer crashes under Wine/Proton. The game writes
+    /// `DX10Enabled` to the registry on its first (crashing) run; flip it to
+    /// 0 so later runs use DX9. Runs before each launch, while Wine is down.
+    fn fix_uaw_dx10(&self) -> Result<Option<PathBuf>> {
+        let reg = self.paths.prefix_root(GameId::Uaw).join("pfx/user.reg");
+        let Ok(text) = std::fs::read_to_string(&reg) else { return Ok(None) };
+        let on = "\"DX10Enabled\"=dword:00000001";
+        if !text.contains(on) {
+            return Ok(None);
+        }
+        std::fs::write(&reg, text.replace(on, "\"DX10Enabled\"=dword:00000000"))?;
+        Ok(Some(reg))
     }
 
     // ---- launching ----------------------------------------------------
@@ -452,6 +498,14 @@ impl Beacon {
             return self.command(g, &m.path.to_string_lossy(), &m.args, &cwd);
         }
 
+        if self.via_steam(g) {
+            let id = self.steam_appid(g).unwrap().to_string();
+            let path_env = std::env::var("PATH").unwrap_or_default();
+            return Ok(match runner::which_in("steam", &path_env) {
+                Some(steam) => Command { program: steam, args: vec!["-applaunch".into(), id], env: vec![], cwd: dir },
+                None => Command { program: "xdg-open".into(), args: vec![format!("steam://rungameid/{id}")], env: vec![], cwd: dir },
+            });
+        }
         let mut args = Vec::new();
         if let Some(m) = chosen.as_ref().filter(|_| !g.is_sage()) {
             bail!("{} doesn't load mods with -mod; install \"{}\" into the game folder or add its own launcher instead", g.short(), m.name);
@@ -466,6 +520,12 @@ impl Beacon {
         }
         args.extend(split_args(&cfg.extra_args));
         let exe = games::find_exe_in(&dir, g).unwrap();
+        if self.virtual_desktop(g) {
+            let size = cfg.resolution.unwrap_or(Resolution { width: 1280, height: 1024 });
+            let mut wrapped = vec![format!("/desktop=Beacon,{size}"), registry::wine_path(&exe, false)];
+            wrapped.extend(args);
+            return self.command(g, "explorer", &wrapped, &dir);
+        }
         self.command(g, &exe.to_string_lossy(), &args, &dir)
     }
 
@@ -703,6 +763,49 @@ mod tests {
         fs::write(&big, b"").unwrap();
         let m = e.beacon.link_mod(g, &big, Some("X")).unwrap();
         assert!(e.beacon.launch_command(g, Some(&m.id)).unwrap_err().to_string().contains("-mod"));
+    }
+
+    #[test]
+    fn other_games() {
+        let mut e = env();
+        let swgb = e.games.join("steamapps/common/Star Wars Galactic Battlegrounds Saga/Game");
+        let uaw = e.games.join("Universe at War Earth Assault");
+        for (d, exe) in [(&swgb, "battlegrounds_x1.exe"), (&uaw, "UAWEA.exe")] {
+            fs::create_dir_all(d).unwrap();
+            fs::write(d.join(exe), b"").unwrap();
+        }
+        e.beacon.scan(&[]);
+
+        // SWGB: virtual desktop by default, sized 1280x1024 unless set.
+        let st = e.beacon.status(GameId::Swgb);
+        assert!(st.ready && st.virtual_desktop && st.steam_appid == Some(356500), "{st:?}");
+        let c = e.beacon.launch_command(GameId::Swgb, None).unwrap();
+        assert_eq!(c.args[0], "explorer");
+        assert_eq!(c.args[1], "/desktop=Beacon,1280x1024");
+        assert!(c.args[2].starts_with("Z:\\") && c.args[2].ends_with("\\battlegrounds_x1.exe"), "{c:?}");
+        e.beacon.game_mut(GameId::Swgb).resolution = Resolution::parse("1024x768");
+        assert_eq!(e.beacon.launch_command(GameId::Swgb, None).unwrap().args[1], "/desktop=Beacon,1024x768");
+        e.beacon.game_mut(GameId::Swgb).virtual_desktop = Some(false);
+        assert!(e.beacon.launch_command(GameId::Swgb, None).unwrap().args[0].ends_with("battlegrounds_x1.exe"));
+
+        // Through Steam: no prefix, Steam does the launch.
+        e.beacon.game_mut(GameId::Swgb).via_steam = true;
+        let c = e.beacon.launch_command(GameId::Swgb, None).unwrap();
+        assert!(c.args.iter().any(|a| a.contains("356500")), "{c:?}");
+        assert!(!e.beacon.setup(GameId::Swgb, true).unwrap());
+
+        // UaW: warns about xlive.dll, and flips DX10Enabled before launch.
+        let st = e.beacon.status(GameId::Uaw);
+        assert!(st.ready && st.issues.iter().any(|i| i.message.contains("xlive.dll")));
+        assert_eq!(st.steam_appid, None, "not in a Steam library");
+        fs::write(uaw.join("xlive.dll"), b"").unwrap();
+        assert!(e.beacon.status(GameId::Uaw).issues.is_empty());
+        let reg = e.beacon.paths.prefix_root(GameId::Uaw).join("pfx/user.reg");
+        fs::create_dir_all(reg.parent().unwrap()).unwrap();
+        fs::write(&reg, "[Software\\\\Petroglyph]\n\"DX10Enabled\"=dword:00000001\n").unwrap();
+        assert!(e.beacon.apply_options(GameId::Uaw).unwrap().is_some());
+        assert!(fs::read_to_string(&reg).unwrap().contains("\"DX10Enabled\"=dword:00000000"));
+        assert!(e.beacon.apply_options(GameId::Uaw).unwrap().is_none(), "already fixed");
     }
 
     #[test]

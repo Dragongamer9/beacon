@@ -21,7 +21,7 @@ function mockApi() {
     { id: "wine:system", name: "System Wine", kind: "wine", path: "/usr/bin/wine" },
   ];
   const mk = (id, title, short, path, extra = {}) => ({
-    id, title, short, path, family: "bfme", installed: !!path, runner: runners[0], has_cd_key: true,
+    id, title, short, path, family: "bfme", virtual_desktop: false, steam_appid: null, via_steam: false, installed: !!path, runner: runners[0], has_cd_key: true,
     resolution: { width: 1920, height: 1080 }, windowed: false, extra_args: "", prefix_ready: true,
     runner_choice: null, selected_mod: null, ready: !!path, issues: path ? [] : [{ level: "error", message: "Game folder not set — scan or pick its folder." }],
     ...extra,
@@ -34,6 +34,10 @@ function mockApi() {
       mk("rotwk", "The Rise of the Witch-king", "RotWK", "/home/you/Games/RotWK", { selected_mod: "rotwk:age-of-the-ring" }),
       mk("aotr", "Age of the Ring", "AotR", null, { has_cd_key: false, tool_launcher: null }),
       mk("conquest", "The Lord of the Rings: Conquest", "Conquest", "/home/you/Games/LOTR Conquest", { family: "lotr", has_cd_key: false, resolution: null }),
+      mk("uaw", "Universe at War: Earth Assault", "UaW", "/home/you/Games/Universe at War Earth Assault", { family: "other", resolution: null, issues: [{ level: "warn", message: "Games for Windows Live is gone: put the community xliveless xlive.dll in the game folder (campaign and skirmish only)." }] }),
+      mk("exigo", "Armies of Exigo", "Exigo", null, { family: "other", resolution: null }),
+      mk("rol", "Rise of Nations: Rise of Legends", "RoL", "/home/you/Games/Rise of Legends", { family: "other", resolution: null }),
+      mk("swgb", "Star Wars: Galactic Battlegrounds Saga", "SWGB", "/home/you/.local/share/Steam/steamapps/common/Star Wars Galactic Battlegrounds Saga/Game", { family: "other", resolution: null, virtual_desktop: true, steam_appid: 356500 }),
     ],
     runners, default_runner: null, best_runner: runners[0].id,
     mods_dir: "/home/you/.local/share/beacon/mods", data_dir: "/home/you/.local/share/beacon", running: [],
@@ -42,7 +46,7 @@ function mockApi() {
     bfme1: [],
     bfme2: [{ id: "bfme2:widescreen", name: "Widescreen", game: "bfme2", kind: "mod", path: "/mods/bfme2/widescreen.big", args: [], in_library: true }],
     aotr: [],
-    conquest: [],
+    conquest: [], uaw: [], exigo: [], rol: [], swgb: [],
     rotwk: [
       { id: "rotwk:age-of-the-ring", name: "Age of the Ring", game: "rotwk", kind: "mod", path: "/mods/rotwk/Age of the Ring", args: [], in_library: true },
       { id: "rotwk:edain", name: "Edain", game: "rotwk", kind: "launcher", path: "/home/you/Mods/Edain/Edain Launcher.exe", args: [], in_library: false },
@@ -60,6 +64,11 @@ function mockApi() {
     set_runner: ({ game: g, runner }) => {
       if (g) Object.assign(game(g), { runner_choice: runner, runner: runners.find((r) => r.id === runner) || runners[0] });
       else state.default_runner = runner;
+      return snap();
+    },
+    set_launch_options: ({ game: g, virtualDesktop, viaSteam }) => {
+      if (virtualDesktop !== null) game(g).virtual_desktop = virtualDesktop;
+      if (viaSteam !== null) game(g).via_steam = viaSteam;
       return snap();
     },
     set_display: ({ game: g, resolution, windowed, extraArgs }) => {
@@ -99,6 +108,10 @@ function mockApi() {
         rotwk: [["edain","Edain Mod","mod","Large lore-focused overhaul with its own launcher and submods.","rotwk:edain"],["aotr","Age of the Ring","mod","Major overhaul with new factions, heroes and a reworked campaign.","rotwk:age-of-the-ring"],["dwarf-holds","The Dwarf Holds","mod","Adds the Dwarven kingdoms as separate playable factions.",null],["elven-alliance","Elven Alliance","mod","Expands the Elven factions with new units and structures.",null],["rotwk-202","RotWK Patch 2.02","patch","Community balance patch many RotWK mods expect.",null]],
         bfme2: [["patch-222","BFME Patch 2.22 / All-in-One","patch","Community patch for BFME II.",null],["divide-conquer","Divide and Conquer","mod","Splits the base factions into more distinct sub-factions.",null]],
         conquest: [["mordorwide","MordorWide (online multiplayer)","patch","Community re-implementation of EA's old Conquest servers. Needs patch 1.1 and a patched exe.",null],["conquest-fixes","Conquest Fixes","mod","Bug fixes and restored cut levels, without changing balance.",null]],
+        uaw: [["uaw-xliveless","xliveless (removes Games for Windows Live)","patch","Put xliveless's xlive.dll in the game folder.",null]],
+        exigo: [["exigo-intel-fix","Integrated graphics fix","patch","Replacement exe for the minimum-requirements error on Intel graphics.",null]],
+        rol: [["rol-heaven","Rise of Legends Heaven","patch","Community site with patches, guides and fixes.",null]],
+        swgb: [["swgb-steam","Galactic Battlegrounds Saga on Steam","game","Still sold.",null],["swgb-fix","Crash & stuck-key fix","patch","Fixes the crash after ~20 minutes and stuck arrow keys.",null]],
         aotr: [["aotr-standalone","Age of the Ring Standalone","game","The fan remake, with both base games bundled.",null]],
         bfme1: [["bfme1-108","BFME Patch 1.08","patch","Community balance and bug-fix patch.",null],["mee","Middle-earth Extended Edition","mod","Extends the original factions.",null],["return-of-shadow","Return of Shadow","mod","Long-running overhaul adding new factions and heroes.",null]],
       }[g];

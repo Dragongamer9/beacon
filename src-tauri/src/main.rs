@@ -121,6 +121,21 @@ fn set_display(state: State<AppState>, game: GameId, resolution: Option<String>,
     })
 }
 
+/// Per-game launch switches for non-BFME games.
+#[tauri::command]
+fn set_launch_options(state: State<AppState>, game: GameId, virtual_desktop: Option<bool>, via_steam: Option<bool>) -> CmdResult<Snapshot> {
+    mutate(&state, |b| {
+        let cfg = b.game_mut(game);
+        if virtual_desktop.is_some() {
+            cfg.virtual_desktop = virtual_desktop;
+        }
+        if let Some(v) = via_steam {
+            cfg.via_steam = v;
+        }
+        Ok(())
+    })
+}
+
 #[tauri::command]
 fn list_mods(state: State<AppState>, game: GameId) -> Vec<ModEntry> {
     state.beacon.lock().unwrap().mods(game)
@@ -318,6 +333,7 @@ fn main() {
             set_cd_key,
             set_runner,
             set_display,
+            set_launch_options,
             list_mods,
             add_mod,
             get_catalog,

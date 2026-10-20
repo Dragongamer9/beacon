@@ -8,7 +8,7 @@ use std::io::BufRead;
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "beacon", version, about = "Linux launcher for Lord of the Rings games (BFME, AotR, Conquest)")]
+#[command(name = "beacon", version, about = "Linux launcher for BFME, AotR, LOTR: Conquest and other classic games")]
 struct Cli {
     #[command(subcommand)]
     cmd: Option<Cmd>,
@@ -35,6 +35,10 @@ enum Cmd {
     Resolution { game: String, value: String },
     /// Windowed mode on/off.
     Windowed { game: String, value: String },
+    /// Run a non-BFME game inside a Wine virtual desktop: on, off or default.
+    VirtualDesktop { game: String, value: String },
+    /// For Steam copies (UaW, SWGB): launch through Steam on/off.
+    ViaSteam { game: String, value: String },
     /// Extra game arguments (quoted string; empty clears).
     Args { game: String, args: String },
     /// List mods for a game.
@@ -83,7 +87,7 @@ enum Cmd {
 }
 
 fn game(s: &str) -> Result<GameId> {
-    GameId::parse(s).ok_or_else(|| anyhow!("unknown game \"{s}\" (use bfme1, bfme2, rotwk, aotr or conquest)"))
+    GameId::parse(s).ok_or_else(|| anyhow!("unknown game \"{s}\" (use bfme1, bfme2, rotwk, aotr, conquest, uaw, exigo, rol or swgb)"))
 }
 
 fn on_off(s: &str) -> Result<bool> {
@@ -193,6 +197,19 @@ fn main() -> Result<()> {
         }
         Cmd::Windowed { game: g, value } => {
             b.game_mut(game(&g)?).windowed = on_off(&value)?;
+            b.save()?;
+        }
+        Cmd::VirtualDesktop { game: g, value } => {
+            let g = game(&g)?;
+            b.game_mut(g).virtual_desktop = if value == "default" { None } else { Some(on_off(&value)?) };
+            b.save()?;
+        }
+        Cmd::ViaSteam { game: g, value } => {
+            let g = game(&g)?;
+            if g.steam_appid().is_none() {
+                bail!("{} has no Steam version Beacon knows about", g.short());
+            }
+            b.game_mut(g).via_steam = on_off(&value)?;
             b.save()?;
         }
         Cmd::Args { game: g, args } => {

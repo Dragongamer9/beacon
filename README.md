@@ -3,7 +3,10 @@
 A Linux launcher for Lord of the Rings games. The shelf has two sections:
 
 - **Battle for Middle-earth:** BFME, BFME II, The Rise of the Witch-king, and the fan-made **Age of the Ring Standalone**.
-- **Lord of the Rings games:** **The Lord of the Rings: Conquest** (Pandemic, 2009). More games can join this section. It is built for controllers, so it works on handhelds, on a TV, and inside Hearth's Game Mode.
+- **Lord of the Rings games:** **The Lord of the Rings: Conquest** (Pandemic, 2009).
+- **Other Games:** **Universe at War: Earth Assault**, **Armies of Exigo**, **Rise of Nations: Rise of Legends** and **Star Wars: Galactic Battlegrounds Saga**.
+
+The shelf scrolls sideways and follows your selection. New games are added in `crates/beacon-core/src/games.rs`. It is built for controllers, so it works on handhelds, on a TV, and inside Hearth's Game Mode.
 
 Beacon runs the games directly. It does not wrap the Windows All-in-One launcher. Each game gets its own Wine/Proton prefix, holding the registry keys the original installer used to write. Beacon also sets your resolution and manages mods.
 
@@ -67,6 +70,28 @@ Their exe patch turns off SSL checking on the login, so use a password you don't
 
 **Mods.** Conquest mods such as *Conquest Fixes* install into the game folder rather than loading with `-mod`. Run their installer in the prefix, or add their launcher in Mods. The catalog lists MordorWide and Conquest Fixes.
 
+## Other Games
+
+These all work the same way as Conquest:
+- Each game gets its own prefix.
+- "Install or locate" runs the game's own installer inside that prefix, or points Beacon at an existing folder.
+- Resolution and controls are set in each game's own options menu.
+- Two extra launch options sit under Game settings → Launch:
+
+| Option | What it does | Default |
+|---|---|---|
+| **Virtual desktop** | Runs the game inside a fixed-size Wine desktop (`explorer /desktop=Beacon,WxH`). This fixes click offsets and resolution switching in older games. *Desktop size* sets it (default 1280x1024); set the game's own resolution to that size or smaller. | On for SWGB |
+| **Launch through Steam** | For copies in a Steam library (UaW, SWGB): Steam launches the game with its own Proton setup, and Beacon's prefix isn't used. | Off |
+
+| Game | Exe Beacon runs | Known fixes |
+|---|---|---|
+| **Universe at War: Earth Assault** (Petroglyph, 2007; delisted 2014) | `UAWEA.exe` | Games for Windows Live is gone and blocks start-up. Put the community **xliveless** `xlive.dll` in the game folder; Beacon warns until it's there. Only campaign and skirmish work. The DX10 renderer crashes under Wine, and Beacon sets `DX10Enabled` to 0 before each launch. The first launch may still crash once while the game creates that setting. |
+| **Armies of Exigo** (Black Hole Entertainment, 2004) | `Exigo.exe` (in `Exigo Files`) | On integrated graphics the game refuses to start ("video card does not meet minimum requirements"). The catalog links a community replacement exe for this. |
+| **Rise of Nations: Rise of Legends** (Big Huge Games, 2006) | `RiseOfLegends.exe` | Lutris reports a missing cursor at times and laggy music under Wine. Rise of Legends Heaven has the official patches. |
+| **Star Wars: Galactic Battlegrounds Saga** (LucasArts, 2001; on Steam) | `battlegrounds_x1.exe` (Clone Campaigns), falling back to `Battlegrounds.exe` | Steam's `player.exe` launcher doesn't work under Proton, so Beacon skips it. Virtual desktop is on by default to fix fullscreen click offset. A community-patched exe (linked in the catalog) fixes a crash after about 20 minutes and stuck arrow keys. |
+
+Of these, only Galactic Battlegrounds Saga is still sold. For the others, use your own discs or installers.
+
 ## Mods
 
 The **Mods** sheet (Y on a controller, M on a keyboard) lists everything Beacon knows about for the selected game. Picking one makes it that game's default.
@@ -92,6 +117,11 @@ The **Mod catalog** lists the major mods and community patches for all three gam
 
 - **AotR:** the Standalone installer.
 - **Conquest:** MordorWide (online), Conquest Fixes.
+- **Other Games:**
+  - UaW: xliveless.
+  - Exigo: integrated graphics fix, ModDB downloads.
+  - RoL: Rise of Legends Heaven.
+  - SWGB: Steam store page, crash and stuck-key fix.
 - **RotWK:** Edain, Age of the Ring 8.x (the older mod version), The Dwarf Holds, Elven Alliance, Patch 2.02.
 - **BFME II:** Patch 2.22, Divide and Conquer, Helm's Deep: Last Hope.
 - **BFME:** Patch 1.08, Middle-earth Extended Edition, Return of Shadow, Shadow and Flame, King of the West, Legends of the 3rd Age.
@@ -162,6 +192,8 @@ beacon run aotr ~/Downloads/AotR/AotR_Standalone_Installer.exe   # install AotR,
 beacon launch aotr
 beacon run conquest /run/media/$USER/CONQUEST/setup.exe   # install Conquest from disc
 beacon launch conquest
+beacon virtual-desktop swgb on && beacon resolution swgb 1280x1024
+beacon via-steam swgb on                 # let Steam launch your Steam copy
 ```
 
 ## Hearth integration

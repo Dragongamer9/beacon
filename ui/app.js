@@ -65,8 +65,17 @@ function modName(g) {
 const FAMILIES = [
   ["bfme", "Battle for Middle-earth"],
   ["lotr", "Lord of the Rings games"],
+  ["other", "Other Games"],
 ];
-const KICKERS = { aotr: "Fan-made standalone", conquest: "Pandemic Studios · 2009" };
+const KICKERS = {
+  aotr: "Fan-made standalone",
+  conquest: "Pandemic Studios · 2009",
+  uaw: "Petroglyph · 2007",
+  exigo: "Black Hole Entertainment · 2004",
+  rol: "Big Huge Games · 2006",
+  swgb: "LucasArts · 2001",
+};
+const STORE = { swgb: "https://store.steampowered.com/app/356500/" };
 const isSage = (g) => g.family === "bfme";
 
 function buildShelf() {
@@ -96,6 +105,11 @@ function select(i) {
 }
 
 function renderShelf() {
+  const current = document.querySelector(`.tile[data-index="${sel}"]`);
+  if (current && renderShelf.last !== sel) {
+    renderShelf.last = sel;
+    current.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "smooth" });
+  }
   document.querySelectorAll(".tile").forEach((tile) => {
     const g = snap.games[Number(tile.dataset.index)];
     tile.classList.toggle("selected", g === game());
@@ -129,7 +143,7 @@ function renderHero() {
   const play = $("#btn-play");
   const label = $("#play-label");
   if (!g.installed) {
-    label.textContent = g.id === "aotr" ? "Install Age of the Ring" : g.id === "conquest" ? "Install or locate Conquest" : "Locate game folder";
+    label.textContent = g.id === "aotr" ? "Install Age of the Ring" : !isSage(g) ? `Install or locate ${g.short}` : "Locate game folder";
     play.disabled = false;
   } else {
     label.textContent = running ? "Running…" : "Play";
@@ -162,7 +176,7 @@ function render() {
 
 async function play() {
   const g = game();
-  if (!g.installed) return g.id === "aotr" || g.id === "conquest" ? open("game", $("#sheet-game")) : locate(g);
+  if (!g.installed) return g.id === "aotr" || !isSage(g) ? open("game", $("#sheet-game")) : locate(g);
   if (!g.ready || isRunning(g.id)) return;
   try {
     await api.call("launch", { game: g.id, modId: null });
@@ -336,10 +350,13 @@ function renderGameSheet() {
           rowHTML({ key: "aotr-install", label: "2 · Run the installer", sub: "Pick the installer .exe from the extracted folder", value: "Choose" }),
         ]
       : []),
-    ...(conquest && !g.installed
-      ? [rowHTML({ key: "conquest-install", label: "Run the game's installer", sub: "Your disc or setup files — it installs into Conquest's own Wine prefix", value: "Choose" })]
+    ...(!sage && !g.installed
+      ? [
+          ...(STORE[g.id] ? [rowHTML({ key: "store", label: "Get it", sub: "Still sold — opens the store page", value: "Open" })] : []),
+          rowHTML({ key: "install", label: "Run the game's installer", sub: `Your disc or setup files — it installs into ${g.short}'s own Wine prefix`, value: "Choose" }),
+        ]
       : []),
-    rowHTML({ key: "folder", label: (aotr || conquest) && !g.installed ? "Already installed? Locate it" : "Game folder", sub: g.path || (aotr ? "The Age of the Ring folder, e.g. …/drive_c/AgeoftheRing" : "Not set"), value: "Change" }),
+    rowHTML({ key: "folder", label: (aotr || !sage) && !g.installed ? "Already installed? Locate it" : "Game folder", sub: g.path || (aotr ? "The Age of the Ring folder, e.g. …/drive_c/AgeoftheRing" : "Not set"), value: "Change" }),
     !sage || aotr ? "" : fieldHTML({
       key: "cdkey",
       label: "CD key",
@@ -352,7 +369,20 @@ function renderGameSheet() {
       ? [`<p class="section-label">Online</p>`, rowHTML({ key: "mordorwide", label: "Play online with MordorWide", sub: "Community servers; needs patch 1.1 and their exe patch", value: "Guide" })]
       : []),
     `<p class="section-label">${sage ? "Display" : "Launch"}</p>`,
-    ...(sage ? [] : [`<p class="section-label" style="text-transform:none;letter-spacing:0;font-weight:400">Resolution, window mode and controls are set in ${esc(g.short)}'s own options menu.</p>`]),
+    ...(sage
+      ? []
+      : [
+          ...(g.steam_appid
+            ? [rowHTML({ key: "steam", label: "Launch through Steam", sub: "Use Steam's own Proton setup for this Steam copy", extra: `<span class="toggle${g.via_steam ? " on" : ""}"></span>` })]
+            : []),
+          ...(g.via_steam
+            ? []
+            : [
+                rowHTML({ key: "vdesk", label: "Virtual desktop", sub: "Runs the game in a fixed-size Wine desktop — fixes click offsets and resolution switching", extra: `<span class="toggle${g.virtual_desktop ? " on" : ""}"></span>` }),
+                g.virtual_desktop && rowHTML({ key: "res", label: "Desktop size", sub: "Set the game to this resolution or smaller", value: res || "1280x1024", cycle: true }),
+              ]),
+          `<p class="section-label" style="text-transform:none;letter-spacing:0;font-weight:400">${esc(g.short)}'s resolution and controls are set in its own options menu.</p>`,
+        ]),
     sage && rowHTML({ key: "res", label: "Resolution", sub: res === RESOLUTIONS.native ? "Matches this screen" : "Written to Options.ini before each launch", value: res || "Game's setting", cycle: true }),
     sage && rowHTML({ key: "windowed", label: "Windowed", sub: "Adds -win", extra: `<span class="toggle${g.windowed ? " on" : ""}"></span>` }),
     fieldHTML({ key: "args", label: "Extra arguments", placeholder: sage ? "-noshellmap" : "Optional", value: g.extra_args }),
@@ -384,7 +414,10 @@ function renderGameSheet() {
   on("windowed", "click", () => saveDisplay({ windowed: !g.windowed }));
   on("aotr-get", "click", () => act(() => api.call("open_url", { url: AOTR_URL }), "Opened ModDB in your browser"));
   on("aotr-install", "click", () => runInstaller(g));
-  on("conquest-install", "click", () => runInstaller(g));
+  on("install", "click", () => runInstaller(g));
+  on("store", "click", () => act(() => api.call("open_url", { url: STORE[g.id] }), "Opened the store page"));
+  on("vdesk", "click", () => act(() => api.call("set_launch_options", { game: g.id, virtualDesktop: !g.virtual_desktop, viaSteam: null })));
+  on("steam", "click", () => act(() => api.call("set_launch_options", { game: g.id, virtualDesktop: null, viaSteam: !g.via_steam })));
   on("mordorwide", "click", () => act(() => api.call("open_url", { url: "https://mordorwi.de/howtoplay" }), "Opened the MordorWide guide"));
   on("aotr-launcher", "click", () => runInstaller(g, g.tool_launcher));
   const key = rows.querySelector("#f-cdkey");
