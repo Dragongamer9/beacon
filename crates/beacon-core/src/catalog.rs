@@ -19,6 +19,8 @@ pub enum EntryKind {
     Mod,
     /// Community patch that updates the base game.
     Patch,
+    /// A standalone game (download + installer), e.g. AotR Standalone.
+    Game,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -47,8 +49,8 @@ pub fn entries() -> Vec<CatalogEntry> {
         e("edain", "Edain Mod", Rotwk, Mod,
           "Large lore-focused overhaul with its own launcher and submods. Install the full mod, then add its launcher here.",
           "https://www.moddb.com/mods/edain-mod".into(), &["edain"]),
-        e("aotr", "Age of the Ring", Rotwk, Mod,
-          "Major overhaul with new factions, heroes and a reworked campaign.",
+        e("aotr-mod", "Age of the Ring (8.x mod version)", Rotwk, Mod,
+          "The older, pre-standalone release that ran as a RotWK mod. For current AotR, use the Age of the Ring tile.",
           search("Age of the Ring"), &["age of the ring", "aotr"]),
         e("dwarf-holds", "The Dwarf Holds", Rotwk, Mod,
           "Adds the Dwarven kingdoms as separate playable factions.",
@@ -59,6 +61,10 @@ pub fn entries() -> Vec<CatalogEntry> {
         e("rotwk-202", "RotWK Patch 2.02", Rotwk, Patch,
           "Community balance patch many RotWK mods expect. Run its installer in RotWK's prefix.",
           search("Rise of the Witch-king patch 2.02"), &["2.02", "202"]),
+        // ---- Age of the Ring Standalone
+        e("aotr-standalone", "Age of the Ring Standalone", Aotr, Game,
+          "The fan remake, with both base games bundled — no RotWK or CD key needed. Download the installer zip (about 14 GB), extract it, then use Install in Beacon.",
+          "https://www.moddb.com/mods/the-horse-lords-a-total-modification-for-bfme/downloads/age-of-the-ring-version-90".into(), &[]),
         // ---- BFME II
         e("patch-222", "BFME Patch 2.22 / All-in-One", Bfme2, Patch,
           "Community patch for BFME II, also packaged with the All in One launcher. Run its installer in BFME II's prefix.",
@@ -127,6 +133,11 @@ pub fn discover(roots: &[PathBuf], max_depth: usize) -> Vec<ModEntry> {
             if !e.file_type().is_dir() || e.depth() == 0 {
                 continue;
             }
+            // Anything inside an AotR Standalone install is the game itself
+            // (the Age of the Ring tile), not a mod.
+            if crate::games::aotr_root(e.path()).and_then(|r| crate::games::aotr_game_dir(&r)).is_some() {
+                continue;
+            }
             let name = e.file_name().to_string_lossy().to_ascii_lowercase();
             for entry in catalog.iter().filter(|c| c.kind == EntryKind::Mod) {
                 let hit = entry.matches.iter().any(|n| n.len() > 3 && !n.chars().all(|c| c.is_ascii_digit() || c == '.') && name.contains(n));
@@ -192,6 +203,12 @@ mod tests {
         std::fs::write(aotr.join("aotr_main.big"), b"").unwrap();
         let empty = t.path().join("Games/edain-notes");
         std::fs::create_dir_all(&empty).unwrap();
+
+        // An AotR Standalone install must not show up as a mod.
+        let standalone = t.path().join("Games/Age of the Ring");
+        std::fs::create_dir_all(standalone.join("aotr")).unwrap();
+        std::fs::write(standalone.join("aotr/lotrbfme2ep1.exe"), b"").unwrap();
+        std::fs::write(standalone.join("aotr/aotr.big"), b"").unwrap();
 
         let found = discover(&[t.path().join("Games")], 4);
         let names: Vec<_> = found.iter().map(|m| m.name.as_str()).collect();

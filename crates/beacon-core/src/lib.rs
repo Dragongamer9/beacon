@@ -56,6 +56,8 @@ pub struct GameStatus {
     pub extra_args: String,
     pub prefix_ready: bool,
     pub selected_mod: Option<String>,
+    /// Extra exe the game ships (AotR's own launcher, for updates).
+    pub tool_launcher: Option<PathBuf>,
     /// No errors (warnings are fine).
     pub ready: bool,
     pub issues: Vec<Issue>,
@@ -67,6 +69,14 @@ pub struct CatalogItem {
     #[serde(flatten)]
     pub entry: catalog::CatalogEntry,
     pub installed: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct AotrBundle {
+    pub bfme2: Option<PathBuf>,
+    pub rotwk: Option<PathBuf>,
+    /// AotR's own launcher (handles updates); may not work under Wine.
+    pub launcher: Option<PathBuf>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -108,7 +118,11 @@ impl Beacon {
 
     /// Point a game at a folder. Accepts the folder or the exe itself.
     pub fn set_path(&mut self, g: GameId, path: &Path) -> Result<()> {
-        let dir = if path.is_file() { path.parent().unwrap_or(path).to_path_buf() } else { path.to_path_buf() };
+        let mut dir = if path.is_file() { path.parent().unwrap_or(path).to_path_buf() } else { path.to_path_buf() };
+        if g == GameId::Aotr {
+            // Accept the install root ("AgeoftheRing") as well as its aotr folder.
+            dir = games::aotr_game_dir(&dir).unwrap_or(dir);
+        }
         if games::find_exe_in(&dir, g).is_none() {
             bail!("{} not found in {}", g.exe(), dir.display());
         }
@@ -118,6 +132,8 @@ impl Beacon {
 
     pub fn scan_roots(&self) -> Vec<PathBuf> {
         let mut roots = games::default_scan_roots(&self.paths.home);
+        // Games installed through Beacon live inside its own prefixes.
+        roots.push(self.paths.data_dir.join("prefixes"));
         roots.extend(self.config.scan_roots.iter().cloned());
         roots
     }
@@ -168,7 +184,7 @@ impl Beacon {
         if runner.is_none() {
             issues.push(Issue { level: Level::Error, message: "No Wine, Proton or umu-launcher found.".into() });
         }
-        if cfg.cd_key.as_deref().map(str::trim).unwrap_or("").is_empty() {
+        if g != GameId::Aotr && cfg.cd_key.as_deref().map(str::trim).unwrap_or("").is_empty() {
             issues.push(Issue { level: Level::Warn, message: "No CD key set. Add the key from your copy if the game asks you to reinstall.".into() });
         }
         let selected_mod = self.config.selected_mod.get(&g).cloned().filter(|id| self.find_mod(g, id).is_some());
@@ -186,6 +202,7 @@ impl Beacon {
             extra_args: cfg.extra_args.clone(),
             prefix_ready: self.paths.prefix_root(g).join("pfx/drive_c").is_dir(),
             selected_mod,
+            tool_launcher: if g == GameId::Aotr { self.aotr_bundled().launcher } else { None },
             ready: !issues.iter().any(|i| i.level == Level::Error),
             issues,
         }
@@ -270,6 +287,9 @@ impl Beacon {
     /// The registry file for a game's prefix. RotWK's also carries BFME II's
     /// keys, since the expansion reads the base game's install.
     pub fn registry_for(&self, g: GameId) -> Result<String> {
+        if g == GameId::Aotr {
+            return self.aotr_registry();
+        }
         let mut entries = Vec::new();
         let mut owned: Vec<(GameId, PathBuf, Option<String>)> = Vec::new();
         for game in g.requires().into_iter().chain([g]) {
@@ -280,6 +300,47 @@ impl Beacon {
             entries.push(registry::RegGame { game: *game, install_dir: dir, cd_key: key.as_deref() });
         }
         Ok(registry::build_reg(&entries, &self.config.language))
+    }
+
+    /// AotR Standalone bundles BFME II and RotWK. Its own launcher writes
+    /// the registry while it runs; since Beacon starts the game exe directly
+    /// (the launcher is unreliable under Wine), Beacon writes the equivalent:
+    /// BFME II and RotWK keys pointing at the bundled copies, with RotWK's
+    /// user-data folder set to "Age of the Ring" so settings and saves land
+    /// where AotR expects them.
+    fn aotr_registry(&self) -> Result<String> {
+        let dir = self.game_dir(GameId::Aotr).ok_or_else(|| anyhow!("Age of the Ring folder not set"))?;
+        let bundled = self.aotr_bundled();
+        let rotwk_dir = bundled.rotwk.unwrap_or_else(|| dir.clone());
+        let key = self.game(GameId::Aotr).cd_key;
+        let mut entries = Vec::new();
+        if let Some(b2) = &bundled.bfme2 {
+            entries.push(registry::RegGame { game: GameId::Bfme2, install_dir: b2, cd_key: key.as_deref() });
+        }
+        entries.push(registry::RegGame { game: GameId::Aotr, install_dir: &rotwk_dir, cd_key: key.as_deref() });
+        Ok(registry::build_reg(&entries, &self.config.language))
+    }
+
+    /// The base-game copies and launcher inside an AotR install.
+    pub fn aotr_bundled(&self) -> AotrBundle {
+        let mut out = AotrBundle::default();
+        let Some(dir) = self.game_dir(GameId::Aotr) else { return out };
+        let Some(root) = games::aotr_root(&dir) else { return out };
+        for e in walkdir::WalkDir::new(&root).max_depth(3).into_iter().flatten() {
+            if !e.file_type().is_file() {
+                continue;
+            }
+            let name = e.file_name().to_string_lossy().to_ascii_lowercase();
+            let parent = e.path().parent().unwrap().to_path_buf();
+            if name == "lotrbfme2.exe" && out.bfme2.is_none() {
+                out.bfme2 = Some(parent);
+            } else if name == "lotrbfme2ep1.exe" && parent != dir && out.rotwk.is_none() {
+                out.rotwk = Some(parent);
+            } else if name.ends_with(".exe") && name.contains("launcher") && out.launcher.is_none() {
+                out.launcher = Some(e.into_path());
+            }
+        }
+        out
     }
 
     fn require_runner(&self, g: GameId) -> Result<&Runner> {
@@ -475,6 +536,7 @@ mod tests {
         assert!(!e.beacon.status(GameId::Bfme2).ready);
         let found = e.beacon.scan(&[]);
         assert_eq!(found.len(), 3);
+        assert!(!e.beacon.status(GameId::Aotr).installed);
         let st = e.beacon.status(GameId::Rotwk);
         assert!(st.ready, "{:?}", st.issues);
         assert_eq!(st.runner.unwrap().id, "wine:system");
@@ -566,6 +628,39 @@ mod tests {
         let c = e.beacon.launch_command(GameId::Bfme1, None).unwrap();
         assert_eq!(c.env.iter().filter(|(k, _)| k == "WINEDEBUG").count(), 1);
         assert!(c.env.contains(&("WINEDEBUG".into(), "+seh".into())));
+    }
+
+    #[test]
+    fn aotr_standalone_setup() {
+        let mut e = env();
+        let root = e.games.join("AgeoftheRing");
+        for (d, exe) in [("aotr", "lotrbfme2ep1.exe"), ("BFME2", "lotrbfme2.exe"), ("RotWK", "lotrbfme2ep1.exe")] {
+            fs::create_dir_all(root.join(d)).unwrap();
+            fs::write(root.join(d).join(exe), b"").unwrap();
+        }
+        fs::write(root.join("AotR Launcher.exe"), b"").unwrap();
+        e.beacon.scan(&[]);
+        // The bundled RotWK copy must not replace the real RotWK install.
+        assert_eq!(e.beacon.game(GameId::Rotwk).path.unwrap(), e.games.join("RotWK"));
+        assert_eq!(e.beacon.game(GameId::Aotr).path.unwrap(), root.join("aotr"));
+        let st = e.beacon.status(GameId::Aotr);
+        assert!(st.ready, "{:?}", st.issues);
+        assert!(st.issues.is_empty(), "AotR needs no CD key: {:?}", st.issues);
+        assert!(st.tool_launcher.unwrap().ends_with("AotR Launcher.exe"));
+
+        let reg = e.beacon.registry_for(GameId::Aotr).unwrap();
+        assert!(reg.contains(r#"\\AgeoftheRing\\BFME2\\""#), "{reg}");
+        assert!(reg.contains(r#"\\AgeoftheRing\\RotWK\\""#), "{reg}");
+        assert!(reg.contains("\"UserDataLeafName\"=\"Age of the Ring\""));
+
+        let cmd = e.beacon.launch_command(GameId::Aotr, None).unwrap();
+        assert!(cmd.args[0].ends_with("AgeoftheRing/aotr/lotrbfme2ep1.exe"));
+        assert_eq!(cmd.cwd, root.join("aotr"));
+        assert!(cmd.env.iter().any(|(k, v)| k == "WINEPREFIX" && v.ends_with("prefixes/aotr/pfx")));
+
+        // Pointing at the install root works too.
+        e.beacon.set_path(GameId::Aotr, &root).unwrap();
+        assert_eq!(e.beacon.game(GameId::Aotr).path.unwrap(), root.join("aotr"));
     }
 
     #[test]

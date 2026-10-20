@@ -219,6 +219,13 @@ fn start(app: AppHandle, state: &AppState, game: GameId, mod_id: Option<String>,
                     let _ = w.unminimize();
                     let _ = w.set_focus();
                 }
+                if installer.is_some() {
+                    // A finished installer may have just put a game in the prefix.
+                    let state = app.state::<AppState>();
+                    let mut b = state.beacon.lock().unwrap();
+                    b.scan(&[]);
+                    let _ = b.save();
+                }
                 let msg = match status {
                     Ok(s) if s.success() => None,
                     Ok(s) => Some(format!("Exited with {s}. Log: {}", beacon.paths.log_file(game).display())),

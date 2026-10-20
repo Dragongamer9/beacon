@@ -1,4 +1,9 @@
-//! The three games Beacon knows about, and how to find them on disk.
+//! The games Beacon knows about, and how to find them on disk.
+//!
+//! Age of the Ring Standalone is a fan-made game built on RotWK's engine.
+//! It ships its own copies of BFME II and RotWK and its own
+//! `lotrbfme2ep1.exe` (in `<AotR root>/aotr/`), so the scanner has to tell
+//! it apart from a real RotWK install by where that exe sits.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -11,16 +16,19 @@ pub enum GameId {
     Bfme1,
     Bfme2,
     Rotwk,
+    /// Age of the Ring Standalone (fan remake).
+    Aotr,
 }
 
 impl GameId {
-    pub const ALL: [GameId; 3] = [GameId::Bfme1, GameId::Bfme2, GameId::Rotwk];
+    pub const ALL: [GameId; 4] = [GameId::Bfme1, GameId::Bfme2, GameId::Rotwk, GameId::Aotr];
 
     pub fn slug(self) -> &'static str {
         match self {
             GameId::Bfme1 => "bfme1",
             GameId::Bfme2 => "bfme2",
             GameId::Rotwk => "rotwk",
+            GameId::Aotr => "aotr",
         }
     }
 
@@ -29,6 +37,7 @@ impl GameId {
             "bfme1" | "bfme" | "1" | "lotrbfme" => Some(GameId::Bfme1),
             "bfme2" | "2" | "lotrbfme2" => Some(GameId::Bfme2),
             "rotwk" | "witchking" | "bfme2ep1" | "ep1" | "lotrbfme2ep1" => Some(GameId::Rotwk),
+            "aotr" | "ageofthering" | "age-of-the-ring" | "age of the ring" => Some(GameId::Aotr),
             _ => None,
         }
     }
@@ -38,6 +47,7 @@ impl GameId {
             GameId::Bfme1 => "The Battle for Middle-earth",
             GameId::Bfme2 => "The Battle for Middle-earth II",
             GameId::Rotwk => "The Rise of the Witch-king",
+            GameId::Aotr => "Age of the Ring",
         }
     }
 
@@ -46,6 +56,7 @@ impl GameId {
             GameId::Bfme1 => "BFME",
             GameId::Bfme2 => "BFME II",
             GameId::Rotwk => "RotWK",
+            GameId::Aotr => "AotR",
         }
     }
 
@@ -54,16 +65,17 @@ impl GameId {
         match self {
             GameId::Bfme1 => "lotrbfme.exe",
             GameId::Bfme2 => "lotrbfme2.exe",
-            GameId::Rotwk => "lotrbfme2ep1.exe",
+            GameId::Rotwk | GameId::Aotr => "lotrbfme2ep1.exe",
         }
     }
 
     /// Key name under `HKLM\SOFTWARE\Electronic Arts\EA Games\`.
+    /// AotR runs RotWK's engine and reads RotWK's key.
     pub fn registry_name(self) -> &'static str {
         match self {
             GameId::Bfme1 => "The Battle for Middle-earth",
             GameId::Bfme2 => "The Battle for Middle-earth II",
-            GameId::Rotwk => "The Lord of the Rings, The Rise of the Witch-king",
+            GameId::Rotwk | GameId::Aotr => "The Lord of the Rings, The Rise of the Witch-king",
         }
     }
 
@@ -73,10 +85,11 @@ impl GameId {
             GameId::Bfme1 => "My Battle for Middle-earth Files",
             GameId::Bfme2 => "My The Battle for Middle-earth II Files",
             GameId::Rotwk => "My The Lord of the Rings, The Rise of the Witch-king Files",
+            GameId::Aotr => "Age of the Ring",
         }
     }
 
-    /// RotWK is an expansion and reads BFME II's install.
+    /// RotWK is an expansion and reads BFME II's install. AotR brings its own.
     pub fn requires(self) -> Option<GameId> {
         match self {
             GameId::Rotwk => Some(GameId::Bfme2),
@@ -102,7 +115,41 @@ pub fn find_exe_in(dir: &Path, game: GameId) -> Option<PathBuf> {
 }
 
 fn game_for_file(name: &str) -> Option<GameId> {
-    GameId::ALL.into_iter().find(|g| name.eq_ignore_ascii_case(g.exe()))
+    [GameId::Bfme1, GameId::Bfme2, GameId::Rotwk].into_iter().find(|g| name.eq_ignore_ascii_case(g.exe()))
+}
+
+fn squash(s: &str) -> String {
+    s.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>().to_ascii_lowercase()
+}
+
+/// The Age of the Ring install folder containing `path`, if any: the
+/// nearest ancestor named like "Age of the Ring" / "AgeoftheRing", or the
+/// parent of an `aotr` folder.
+pub fn aotr_root(path: &Path) -> Option<PathBuf> {
+    let mut p = Some(path);
+    for _ in 0..4 {
+        let cur = p?;
+        let name = squash(&cur.file_name()?.to_string_lossy());
+        if name.contains("ageofthering") {
+            return Some(cur.to_path_buf());
+        }
+        if name == "aotr" {
+            return cur.parent().map(Path::to_path_buf);
+        }
+        p = cur.parent();
+    }
+    None
+}
+
+/// The folder holding AotR's own exe, given the install root or the exe's folder.
+pub fn aotr_game_dir(path: &Path) -> Option<PathBuf> {
+    if find_exe_in(path, GameId::Aotr).is_some() && path.file_name().map(|n| squash(&n.to_string_lossy()) == "aotr").unwrap_or(false) {
+        return Some(path.to_path_buf());
+    }
+    let root = aotr_root(path).unwrap_or_else(|| path.to_path_buf());
+    std::fs::read_dir(&root).ok()?.flatten().map(|e| e.path()).find(|d| {
+        d.is_dir() && squash(&d.file_name().unwrap_or_default().to_string_lossy()) == "aotr" && find_exe_in(d, GameId::Aotr).is_some()
+    })
 }
 
 /// Folders worth skipping while scanning (Wine plumbing, caches, huge trees).
@@ -130,8 +177,17 @@ pub fn scan(roots: &[PathBuf], max_depth: usize) -> Vec<FoundGame> {
             if !entry.file_type().is_file() {
                 continue;
             }
-            let Some(game) = game_for_file(&entry.file_name().to_string_lossy()) else { continue };
+            let Some(mut game) = game_for_file(&entry.file_name().to_string_lossy()) else { continue };
             let Some(dir) = entry.path().parent() else { continue };
+            // Inside an Age of the Ring install: its own exe is AotR, and the
+            // base-game copies it bundles aren't separate installs.
+            if aotr_root(dir).is_some() {
+                if game == GameId::Rotwk && aotr_game_dir(dir).as_deref() == Some(dir) {
+                    game = GameId::Aotr;
+                } else {
+                    continue;
+                }
+            }
             if seen.insert((game, dir.to_path_buf())) {
                 out.push(FoundGame { game, dir: dir.to_path_buf() });
             }
@@ -165,6 +221,7 @@ mod tests {
         assert_eq!(GameId::parse("BFME"), Some(GameId::Bfme1));
         assert_eq!(GameId::parse("bfme2"), Some(GameId::Bfme2));
         assert_eq!(GameId::parse("RotWK"), Some(GameId::Rotwk));
+        assert_eq!(GameId::parse("AotR"), Some(GameId::Aotr));
         assert_eq!(GameId::parse("bfme3"), None);
     }
 
@@ -185,9 +242,31 @@ mod tests {
 
         let found = scan(&[t.path().join("Games")], 8);
         assert_eq!(found.len(), 3, "{found:?}");
+        assert!(found.iter().all(|f| f.game != GameId::Aotr));
         assert_eq!(found[0], FoundGame { game: GameId::Bfme1, dir: b1.clone() });
         assert_eq!(found[2].game, GameId::Rotwk);
         assert!(find_exe_in(&b1, GameId::Bfme1).is_some());
         assert!(find_exe_in(&b1, GameId::Bfme2).is_none());
+    }
+
+    #[test]
+    fn aotr_standalone_is_its_own_game() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().join("Games/age-of-the-ring/drive_c/AgeoftheRing");
+        // Layout per the Lutris installer: <root>/aotr/lotrbfme2ep1.exe,
+        // plus bundled base games that must not be picked up as installs.
+        for (d, exe) in [("aotr", "lotrbfme2ep1.exe"), ("BFME2", "lotrbfme2.exe"), ("RotWK", "lotrbfme2ep1.exe")] {
+            std::fs::create_dir_all(root.join(d)).unwrap();
+            std::fs::write(root.join(d).join(exe), b"").unwrap();
+        }
+        let real = t.path().join("Games/RotWK");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join("lotrbfme2ep1.exe"), b"").unwrap();
+
+        let found = scan(&[t.path().join("Games")], 9);
+        assert_eq!(found, vec![FoundGame { game: GameId::Rotwk, dir: real.clone() }, FoundGame { game: GameId::Aotr, dir: root.join("aotr") }]);
+        assert_eq!(aotr_root(&root.join("aotr")).unwrap(), root);
+        assert_eq!(aotr_game_dir(&root).unwrap(), root.join("aotr"));
+        assert!(aotr_root(&real).is_none());
     }
 }

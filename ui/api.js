@@ -32,6 +32,7 @@ function mockApi() {
       mk("bfme1", "The Battle for Middle-earth", "BFME", "/home/you/Games/BFME1"),
       mk("bfme2", "The Battle for Middle-earth II", "BFME II", "/home/you/Games/BFME2", { has_cd_key: false, issues: [{ level: "warn", message: "No CD key set. Add the key from your copy if the game asks you to reinstall." }] }),
       mk("rotwk", "The Rise of the Witch-king", "RotWK", "/home/you/Games/RotWK", { selected_mod: "rotwk:age-of-the-ring" }),
+      mk("aotr", "Age of the Ring", "AotR", null, { has_cd_key: false, tool_launcher: null }),
     ],
     runners, default_runner: null, best_runner: runners[0].id,
     mods_dir: "/home/you/.local/share/beacon/mods", data_dir: "/home/you/.local/share/beacon", running: [],
@@ -39,6 +40,7 @@ function mockApi() {
   const mods = {
     bfme1: [],
     bfme2: [{ id: "bfme2:widescreen", name: "Widescreen", game: "bfme2", kind: "mod", path: "/mods/bfme2/widescreen.big", args: [], in_library: true }],
+    aotr: [],
     rotwk: [
       { id: "rotwk:age-of-the-ring", name: "Age of the Ring", game: "rotwk", kind: "mod", path: "/mods/rotwk/Age of the Ring", args: [], in_library: true },
       { id: "rotwk:edain", name: "Edain", game: "rotwk", kind: "launcher", path: "/home/you/Mods/Edain/Edain Launcher.exe", args: [], in_library: false },
@@ -81,7 +83,10 @@ function mockApi() {
       setTimeout(() => emit("game-event", { game: g, phase: "running" }), 1600);
       setTimeout(() => { state.running = state.running.filter((x) => x !== g); emit("game-event", { game: g, phase: "exited" }); }, 4200);
     },
-    run_installer: async (a) => handlers.launch(a),
+    run_installer: async (a) => {
+      await handlers.launch(a);
+      if (a.game === "aotr") setTimeout(() => Object.assign(game("aotr"), { path: "/home/you/.local/share/beacon/prefixes/aotr/pfx/drive_c/AgeoftheRing/aotr", installed: true, ready: true, issues: [], tool_launcher: "/…/AgeoftheRing/AotR Launcher.exe" }), 4000);
+    },
     launch_preview: ({ game: g, modId }) => {
       const gm = game(g);
       const mod = mods[g].find((m) => m.id === (modId ?? gm.selected_mod));
@@ -91,6 +96,7 @@ function mockApi() {
       const cat = {
         rotwk: [["edain","Edain Mod","mod","Large lore-focused overhaul with its own launcher and submods.","rotwk:edain"],["aotr","Age of the Ring","mod","Major overhaul with new factions, heroes and a reworked campaign.","rotwk:age-of-the-ring"],["dwarf-holds","The Dwarf Holds","mod","Adds the Dwarven kingdoms as separate playable factions.",null],["elven-alliance","Elven Alliance","mod","Expands the Elven factions with new units and structures.",null],["rotwk-202","RotWK Patch 2.02","patch","Community balance patch many RotWK mods expect.",null]],
         bfme2: [["patch-222","BFME Patch 2.22 / All-in-One","patch","Community patch for BFME II.",null],["divide-conquer","Divide and Conquer","mod","Splits the base factions into more distinct sub-factions.",null]],
+        aotr: [["aotr-standalone","Age of the Ring Standalone","game","The fan remake, with both base games bundled.",null]],
         bfme1: [["bfme1-108","BFME Patch 1.08","patch","Community balance and bug-fix patch.",null],["mee","Middle-earth Extended Edition","mod","Extends the original factions.",null],["return-of-shadow","Return of Shadow","mod","Long-running overhaul adding new factions and heroes.",null]],
       }[g];
       return cat.map(([id, name, kind, blurb, installed]) => ({ id, name, game: g, kind, blurb, url: "https://www.moddb.com/search?q=" + name, installed }));
