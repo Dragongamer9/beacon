@@ -83,7 +83,7 @@ enum Cmd {
 }
 
 fn game(s: &str) -> Result<GameId> {
-    GameId::parse(s).ok_or_else(|| anyhow!("unknown game \"{s}\" (use bfme1, bfme2 or rotwk)"))
+    GameId::parse(s).ok_or_else(|| anyhow!("unknown game \"{s}\" (use bfme1, bfme2, rotwk or aotr)"))
 }
 
 fn on_off(s: &str) -> Result<bool> {
@@ -284,6 +284,11 @@ fn main() -> Result<()> {
             let cmd = b.run_in_prefix_command(g, &exe)?;
             let st = b.spawn_logged(g, &cmd)?.wait()?;
             println!("Exited: {st}");
+            // Pick up anything the installer just put in the prefix.
+            for f in b.scan(&[]) {
+                println!("found {} in {}", f.game.short(), f.dir.display());
+            }
+            b.save()?;
         }
         Cmd::Paths => {
             println!("config:   {}", b.paths.config_file.display());

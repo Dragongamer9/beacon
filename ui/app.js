@@ -9,6 +9,8 @@ let sel = 0;
 const sheets = []; // stack of open sheets: "mods" | "catalog" | "game" | "launcher"
 let openSheet = null; // top of the stack
 let overlayState = null; // { game, phase }
+let installing = null; // game id while an installer we started is running
+const AOTR_URL = "https://www.moddb.com/mods/the-horse-lords-a-total-modification-for-bfme/downloads/age-of-the-ring-version-90";
 const modsCache = {};
 
 const RESOLUTIONS = ["1280x720", "1280x800", "1366x768", "1600x900", "1920x1080", "1920x1200", "2560x1080", "2560x1440", "2560x1600", "3440x1440", "3840x2160"];
@@ -99,6 +101,7 @@ function renderHero() {
   const g = game();
   document.body.dataset.accent = g.id;
   $("#hero-title").textContent = g.title;
+  $("#hero-kicker").textContent = g.id === "aotr" ? "Fan-made standalone" : "The Lord of the Rings";
   $("#hero-emblem").setAttribute("href", `#emblem-${g.id}`);
   const running = isRunning(g.id);
   const chips = [];
@@ -118,7 +121,7 @@ function renderHero() {
   const play = $("#btn-play");
   const label = $("#play-label");
   if (!g.installed) {
-    label.textContent = "Locate game folder";
+    label.textContent = g.id === "aotr" ? "Install Age of the Ring" : "Locate game folder";
     play.disabled = false;
   } else {
     label.textContent = running ? "Running…" : "Play";
@@ -151,7 +154,7 @@ function render() {
 
 async function play() {
   const g = game();
-  if (!g.installed) return locate(g);
+  if (!g.installed) return g.id === "aotr" ? open("game", $("#sheet-game")) : locate(g);
   if (!g.ready || isRunning(g.id)) return;
   try {
     await api.call("launch", { game: g.id, modId: null });
@@ -257,6 +260,7 @@ function renderCatalogSheet() {
       : "";
   const rows = $("#catalog-rows");
   rows.innerHTML =
+    section("Standalone game", items.filter((i) => i.kind === "game")) +
     section("Mods", items.filter((i) => i.kind === "mod")) +
     section("Community patches", items.filter((i) => i.kind === "patch")) +
     `<p class="section-label" style="text-transform:none;letter-spacing:0;font-weight:400">“Get” opens the mod's page. Once it's downloaded, add it from Mods — or run its installer from Game settings.</p>`;
@@ -308,10 +312,17 @@ function renderGameSheet() {
   const runnerName = g.runner ? (g.runner_choice ? g.runner.name : `Automatic (${g.runner.name})`) : "None found";
   const res = resText(g.resolution);
   const rows = $("#game-rows");
+  const aotr = g.id === "aotr";
   rows.innerHTML = [
     `<p class="section-label">Install</p>`,
-    rowHTML({ key: "folder", label: "Game folder", sub: g.path || "Not set", value: "Change" }),
-    fieldHTML({
+    ...(aotr && !g.installed
+      ? [
+          rowHTML({ key: "aotr-get", label: "1 · Get the installer", sub: "Opens ModDB: download the Standalone zip (about 14 GB) and extract it", value: "Open" }),
+          rowHTML({ key: "aotr-install", label: "2 · Run the installer", sub: "Pick the installer .exe from the extracted folder", value: "Choose" }),
+        ]
+      : []),
+    rowHTML({ key: "folder", label: aotr && !g.installed ? "Already installed? Locate it" : "Game folder", sub: g.path || (aotr ? "The Age of the Ring folder, e.g. …/drive_c/AgeoftheRing" : "Not set"), value: "Change" }),
+    aotr ? "" : fieldHTML({
       key: "cdkey",
       label: "CD key",
       placeholder: g.has_cd_key ? "Saved — type a new one to replace it" : "Key from your copy of the game",
@@ -324,6 +335,9 @@ function renderGameSheet() {
     rowHTML({ key: "windowed", label: "Windowed", sub: "Adds -win", extra: `<span class="toggle${g.windowed ? " on" : ""}"></span>` }),
     fieldHTML({ key: "args", label: "Extra arguments", placeholder: "-noshellmap", value: g.extra_args }),
     `<p class="section-label">Tools</p>`,
+    ...(aotr && g.tool_launcher
+      ? [`<button class="nav row-btn" data-key="aotr-launcher"><svg viewBox="0 0 24 24"><use href="#i-open"/></svg>Open the AotR Launcher for updates (may not work under Wine)</button>`]
+      : []),
     `<button class="nav row-btn" data-key="installer"><svg viewBox="0 0 24 24"><use href="#i-plus"/></svg>Run a patch or installer in this game's prefix</button>`,
     `<button class="nav row-btn" data-key="log"><svg viewBox="0 0 24 24"><use href="#i-scroll"/></svg>Open log</button>`,
     `<button class="nav row-btn" data-key="openfolder"><svg viewBox="0 0 24 24"><use href="#i-open"/></svg>Open game folder</button>`,
@@ -346,14 +360,14 @@ function renderGameSheet() {
   });
   on("res", "click", (e) => e.currentTarget.dispatchEvent(new CustomEvent("cycle", { detail: 1 })));
   on("windowed", "click", () => saveDisplay({ windowed: !g.windowed }));
+  on("aotr-get", "click", () => act(() => api.call("open_url", { url: AOTR_URL }), "Opened ModDB in your browser"));
+  on("aotr-install", "click", () => runInstaller(g));
+  on("aotr-launcher", "click", () => runInstaller(g, g.tool_launcher));
   const key = rows.querySelector("#f-cdkey");
-  key.addEventListener("change", () => act(() => api.call("set_cd_key", { game: g.id, key: key.value }), key.value.trim() ? "CD key saved" : "CD key cleared"));
+  key?.addEventListener("change", () => act(() => api.call("set_cd_key", { game: g.id, key: key.value }), key.value.trim() ? "CD key saved" : "CD key cleared"));
   const args = rows.querySelector("#f-args");
   args.addEventListener("change", () => saveDisplay({ extraArgs: args.value }));
-  on("installer", "click", async () => {
-    const path = await api.call("pick_file", { kind: "exe" });
-    if (path) await act(() => api.call("run_installer", { game: g.id, path }));
-  });
+  on("installer", "click", () => runInstaller(g));
   on("log", "click", () => act(() => api.call("open_log", { game: g.id })));
   on("openfolder", "click", () => g.path && act(() => api.call("open_path", { path: g.path })));
 
@@ -362,6 +376,13 @@ function renderGameSheet() {
     .then((s) => ($("#cmd-preview").textContent = s))
     .catch((e) => ($("#cmd-preview").textContent = String(e?.message ?? e)));
   nav.refocus(keep ? `[data-key="${CSS.escape(keep)}"]` : null);
+}
+
+async function runInstaller(g, path) {
+  path ||= await api.call("pick_file", { kind: "exe" });
+  if (!path) return;
+  installing = g.id;
+  if (!(await act(() => api.call("run_installer", { game: g.id, path })))) installing = null;
 }
 
 function saveDisplay(change) {
@@ -444,13 +465,22 @@ async function onGameEvent({ game: id, phase, message }) {
   const g = snap.games.find((x) => x.id === id);
   const short = g?.short ?? id;
   overlayState = { game: id, phase };
+  const inst = installing === id;
   if (phase === "preparing") {
     snap.running = [...new Set([...snap.running, id])];
-    showOverlay({ title: "Lighting the beacon…", text: `Getting ${short} ready. The first launch builds its Wine prefix, which can take a minute.` });
+    showOverlay({ title: "Lighting the beacon…", text: `Getting ${short}'s Wine prefix ready. The first time can take a minute.` });
   } else if (phase === "running") {
-    showOverlay({ title: `${short} is running`, text: "Beacon will be right here when you're done." });
+    showOverlay(
+      inst
+        ? { title: "Installer running", text: id === "aotr" ? "The Age of the Ring installer can run silently for 15–20 minutes with no progress bar. Leave it be — Beacon finds the game when it finishes." : "Follow the installer's window. Beacon picks up anything it installs when it closes." }
+        : { title: `${short} is running`, text: "Beacon will be right here when you're done." }
+    );
   } else {
+    installing = null;
+    const wasInstalled = g?.installed;
     snap = await api.call("get_state");
+    await loadMods(id, true).catch(() => {});
+    if (inst && !wasInstalled && snap.games.find((x) => x.id === id)?.installed) toast(`${short} is installed and ready`);
     if (phase === "error" || message) showOverlay({ title: phase === "error" ? `${short} couldn't start` : `${short} closed`, text: message || "", error: true, ok: true });
     else hideOverlay();
   }

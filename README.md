@@ -1,6 +1,6 @@
 # Beacon
 
-A Linux launcher for **The Battle for Middle-earth**, **BFME II** and **The Rise of the Witch-king**. It is built for controllers, so it works on handhelds, on a TV, and inside Hearth's Game Mode.
+A Linux launcher for **The Battle for Middle-earth**, **BFME II**, **The Rise of the Witch-king** and the fan-made **Age of the Ring Standalone**. It is built for controllers, so it works on handhelds, on a TV, and inside Hearth's Game Mode.
 
 Beacon runs the games directly. It does not wrap the Windows All-in-One launcher. Each game gets its own Wine/Proton prefix, holding the registry keys the original installer used to write. Beacon also sets your resolution and manages mods.
 
@@ -8,7 +8,7 @@ Beacon runs the games directly. It does not wrap the Windows All-in-One launcher
 
 ## What it does
 
-- **Finds your installs.** It scans `~/Games`, Wine and Bottles prefixes, Steam compatdata and removable drives for `lotrbfme.exe`, `lotrbfme2.exe` and `lotrbfme2ep1.exe`.
+- **Finds your installs.** It scans `~/Games`, Wine and Bottles prefixes, Steam compatdata, Beacon's own prefixes and removable drives for `lotrbfme.exe`, `lotrbfme2.exe` and `lotrbfme2ep1.exe`, and tells AotR Standalone apart from RotWK.
 - **Finds a runner.** In order of preference: GE-Proton, then any Proton, then umu-launcher's UMU-Proton, then system Wine or Lutris Wine. You can override this per game or globally. Proton builds run through `umu-run` when it's installed, so they get the Steam Linux Runtime without Steam.
 - **Builds one prefix per game** in `~/.local/share/beacon/prefixes/<game>/pfx`. On first launch, and whenever the folder, CD key or runner changes, it imports the EA registry keys with Wine's `regedit`:
   - `InstallPath`, `Language`, `UserDataLeafName` and your `ergc` CD key.
@@ -18,6 +18,30 @@ Beacon runs the games directly. It does not wrap the Windows All-in-One launcher
 - **Handles mods** (see below), including mods that ship their own Windows launcher.
 - **Runs patches and installers inside a game's prefix,** so community patches and mod installers see the game.
 - **Logs** each game to `~/.local/share/beacon/logs/<game>.log`.
+
+## Age of the Ring Standalone
+
+Age of the Ring is a fan remake built on RotWK's engine. Since 9.0 it ships as a standalone game: the installer bundles both base games, so you don't need RotWK or a CD key. Beacon gives it its own tile and its own prefix.
+
+**Installing.** On the AotR tile, press *Install Age of the Ring*:
+1. **Get the installer.** This opens the ModDB page. Download `AotR_Standalone_*_Installer.zip` (about 14 GB) and extract it.
+2. **Run the installer.** Pick its `.exe`. It runs inside AotR's prefix and can sit silently for 15–20 minutes with no progress bar.
+3. When it finishes, Beacon rescans and finds `…/AgeoftheRing/aotr/lotrbfme2ep1.exe` by itself.
+
+If AotR is already installed somewhere, for example in a Lutris prefix, use *Already installed? Locate it* or *Find games*. You can point at either the `AgeoftheRing` folder or its `aotr` folder.
+
+**How Beacon runs it.**
+- **The game exe directly.** AotR's own launcher handles updates, but it may not work under Wine.
+- **Registry keys.** The launcher normally writes them only while it runs, so Beacon writes the equivalent: the BFME II and RotWK keys point at the bundled copies, and the user-data folder is `Age of the Ring`.
+- **Settings and saves.** They go to `AppData/Roaming/Age of the Ring/`, which is also where Beacon writes the resolution.
+- **Detection.** AotR's exe has the same name as RotWK's. The scanner tells them apart by the `AgeoftheRing`/`aotr` folders, and it ignores the bundled base-game copies, so they never replace your real RotWK install.
+
+**Updating.** Game settings → *Open the AotR Launcher for updates* runs AotR's launcher in the prefix. If it won't start under Wine, download the new Standalone installer and run it the same way.
+
+**If it crashes on start:**
+- AotR needs the Visual C++ 2019 runtime and DirectX 9. Recent GE-Proton covers these.
+- With plain Wine, run `WINEPREFIX=~/.local/share/beacon/prefixes/aotr/pfx winetricks vcrun2019 d3dx9`.
+- Or try another Proton build in Game settings → Runner.
 
 ## Mods
 
@@ -42,7 +66,8 @@ There are three ways to add mods:
 
 The **Mod catalog** lists the major mods and community patches for all three games:
 
-- **RotWK:** Edain, Age of the Ring, The Dwarf Holds, Elven Alliance, Patch 2.02.
+- **AotR:** the Standalone installer.
+- **RotWK:** Edain, Age of the Ring 8.x (the older mod version), The Dwarf Holds, Elven Alliance, Patch 2.02.
 - **BFME II:** Patch 2.22, Divide and Conquer, Helm's Deep: Last Hope.
 - **BFME:** Patch 1.08, Middle-earth Extended Edition, Return of Shadow, Shadow and Flame, King of the West, Legends of the 3rd Age.
 
@@ -108,6 +133,8 @@ beacon add-mod rotwk ~/Mods/AotR --name "Age of the Ring"
 beacon select-mod rotwk rotwk:age-of-the-ring
 beacon run rotwk ~/Downloads/patch_installer.exe
 beacon launch rotwk [--mod <id> | --vanilla] [--dry-run] [--wait]
+beacon run aotr ~/Downloads/AotR/AotR_Standalone_Installer.exe   # install AotR, then:
+beacon launch aotr
 ```
 
 ## Hearth integration
