@@ -29,10 +29,10 @@
     "active": true,
     "targets": ["appimage", "deb", "rpm"],
     "category": "StrategyGame",
-    "shortDescription": "Launcher for BFME, LOTR and other classic strategy games on Linux",
-    "longDescription": "Beacon is a controller-first Linux launcher for The Lord of the Rings: The Battle for Middle-earth I and II, The Rise of the Witch-king, Age of the Ring, The Lord of the Rings: Conquest and a few classic strategy games (Universe at War, Armies of Exigo, Rise of Legends, Star Wars: Galactic Battlegrounds). It finds your installs, gives each game its own Wine or Proton prefix with the registry keys it needs, sets the resolution and manages mods. It includes the beacon command-line tool. The games are not included.",
+    "shortDescription": "Launcher for BFME, LOTR and other classic strategy games on Linux and Windows",
+    "longDescription": "Beacon is a controller-first launcher for Linux and Windows for The Lord of the Rings: The Battle for Middle-earth I and II, The Rise of the Witch-king, Age of the Ring, The Lord of the Rings: Conquest and a few classic strategy games (Universe at War, Armies of Exigo, Rise of Legends, Star Wars: Galactic Battlegrounds). It finds your installs (including the BFME All-in-One launcher's), installs from your own discs or disc images, gives each game its own Wine or Proton prefix on Linux with the registry keys it needs, sets the resolution and manages mods, including fan content from the BFME workshop. It includes the beacon command-line tool. The games are not included.",
     "homepage": "https://github.com/Dragongamer9/beacon",
-    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.png"],
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.png", "icons/icon.ico"],
     "linux": {
       "deb": {
         "section": "games",
@@ -54,6 +54,19 @@
         "files": {
           "/usr/bin/beacon": "../target/release/beacon"
         }
+      }
+    },
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      },
+      "nsis": {
+        "installMode": "currentUser",
+        "displayLanguageSelector": false,
+        "installerIcon": "icons/icon.ico"
+      },
+      "wix": {
+        "language": "en-US"
       }
     }
   }

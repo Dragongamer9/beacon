@@ -1,5 +1,6 @@
 //! Settings on disk (`~/.config/beacon/config.json`) and where Beacon keeps
-//! its prefixes, logs and mods (`~/.local/share/beacon/`).
+//! its prefixes, logs and mods (`~/.local/share/beacon/`). On Windows:
+//! `%APPDATA%\beacon\config.json` and `%LOCALAPPDATA%\beacon\`.
 
 use crate::games::GameId;
 use crate::mods::ModEntry;
@@ -110,24 +111,28 @@ pub struct Paths {
     pub home: PathBuf,
     pub config_file: PathBuf,
     pub data_dir: PathBuf,
+    /// Windows: the real `%APPDATA%` (Roaming), where games run natively keep
+    /// Options.ini, saves and maps. `None` on Linux (each game's prefix has its own).
+    #[serde(default)]
+    pub appdata: Option<PathBuf>,
 }
 
 impl Paths {
-    /// XDG locations, overridable with BEACON_CONFIG / BEACON_DATA_DIR.
+    /// The platform's standard locations, overridable with BEACON_CONFIG / BEACON_DATA_DIR.
+    /// Linux: XDG (`~/.config/beacon/config.json`, `~/.local/share/beacon`).
+    /// Windows: `%APPDATA%\beacon\config.json`, `%LOCALAPPDATA%\beacon` (prefixes aren't
+    /// used there, but mods, logs and downloads are big enough to belong in Local).
     pub fn from_env() -> Result<Paths> {
         let home = dirs::home_dir().context("no home directory")?;
-        let config_file = std::env::var_os("BEACON_CONFIG")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| dirs::config_dir().unwrap_or_else(|| home.join(".config")).join("beacon/config.json"));
-        let data_dir = std::env::var_os("BEACON_DATA_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| dirs::data_dir().unwrap_or_else(|| home.join(".local/share")).join("beacon"));
-        Ok(Paths { home, config_file, data_dir })
+        let config_file = std::env::var_os("BEACON_CONFIG").map(PathBuf::from).unwrap_or_else(|| default_config_file(&home));
+        let data_dir = std::env::var_os("BEACON_DATA_DIR").map(PathBuf::from).unwrap_or_else(|| default_data_dir(&home));
+        let appdata = if cfg!(windows) { dirs::config_dir() } else { None };
+        Ok(Paths { home, config_file, data_dir, appdata })
     }
 
     /// Everything under one folder (tests, portable installs).
     pub fn under(root: &Path, home: &Path) -> Paths {
-        Paths { home: home.to_path_buf(), config_file: root.join("config.json"), data_dir: root.join("data") }
+        Paths { home: home.to_path_buf(), config_file: root.join("config.json"), data_dir: root.join("data"), appdata: None }
     }
 
     pub fn prefix_root(&self, g: GameId) -> PathBuf {
@@ -142,6 +147,26 @@ impl Paths {
     pub fn mods_dir(&self) -> PathBuf {
         self.data_dir.join("mods")
     }
+}
+
+#[cfg(not(windows))]
+fn default_config_file(home: &Path) -> PathBuf {
+    dirs::config_dir().unwrap_or_else(|| home.join(".config")).join("beacon/config.json")
+}
+
+#[cfg(not(windows))]
+fn default_data_dir(home: &Path) -> PathBuf {
+    dirs::data_dir().unwrap_or_else(|| home.join(".local/share")).join("beacon")
+}
+
+#[cfg(windows)]
+fn default_config_file(home: &Path) -> PathBuf {
+    dirs::config_dir().unwrap_or_else(|| home.join("AppData").join("Roaming")).join("beacon").join("config.json")
+}
+
+#[cfg(windows)]
+fn default_data_dir(home: &Path) -> PathBuf {
+    dirs::data_local_dir().unwrap_or_else(|| home.join("AppData").join("Local")).join("beacon")
 }
 
 /// Split a string into arguments, honouring single and double quotes.

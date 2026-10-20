@@ -105,6 +105,27 @@ pub fn paths(b: &Beacon) -> Value {
     })
 }
 
+/// `workshop <game>`: `{game, page, source, items: [workshop::Item], hidden}`. `hidden` counts the
+/// entries left out (base games, EA's official patches, snapshots, other games).
+pub fn workshop(g: GameId, page: u32, items: &[crate::workshop::Item], hidden: usize) -> Value {
+    json!({
+        "game": g.slug(),
+        "page": page,
+        "source": crate::workshop::SITE,
+        "items": value(&items),
+        "hidden": hidden,
+    })
+}
+
+/// `aio`: `{launcher_url, games: [{game, dir, active_patch, active_mod}], appdata: [...]}`.
+pub fn aio(b: &Beacon) -> Value {
+    json!({
+        "launcher_url": crate::aio::LAUNCHER_URL,
+        "games": value(&b.aio_games()),
+        "appdata": b.aio_appdatas().iter().map(|p| path(p)).collect::<Vec<_>>(),
+    })
+}
+
 /// The end of a text file: at most `max_bytes`, starting at a whole line.
 fn tail(file: &Path, max_bytes: u64) -> Option<String> {
     use std::io::{Read, Seek, SeekFrom};
@@ -253,6 +274,8 @@ mod tests {
         assert!(edain["url"].as_str().unwrap().starts_with("https://"));
     }
 
+    // Wine runner ids, Wine command lines and `/` in path strings.
+    #[cfg(unix)]
     #[test]
     fn runners_shape() {
         let (_t, mut b) = beacon();
@@ -281,6 +304,8 @@ mod tests {
         assert_eq!((none["editions"].clone(), none["steps"].clone()), (json!([]), json!([])));
     }
 
+    // Wine runner ids, Wine command lines and `/` in path strings.
+    #[cfg(unix)]
     #[test]
     fn status_paths_and_log_shapes() {
         let (_t, b) = beacon();
@@ -304,6 +329,8 @@ mod tests {
         assert_eq!(tail(&f, 6).unwrap(), "three\n", "starts at a whole line");
     }
 
+    // Wine runner ids, Wine command lines and `/` in path strings.
+    #[cfg(unix)]
     #[test]
     fn command_and_found_shapes() {
         let (_t, b) = beacon();
@@ -313,6 +340,24 @@ mod tests {
         assert!(v["env"].as_array().unwrap().iter().any(|e| e[0] == "WINEPREFIX"));
         let f = found(&[FoundGame { game: GameId::Bfme2, dir: "/g/BFME2".into() }]);
         assert_eq!(f, json!([{"game": "bfme2", "dir": "/g/BFME2"}]));
+    }
+
+    #[test]
+    fn workshop_and_aio_shapes() {
+        let (_t, b) = beacon();
+        let item = crate::workshop::parse_item(&json!({"Guid": "g-1", "Name": "Edain", "Game": 2, "Type": 1})).unwrap();
+        let v = workshop(GameId::Rotwk, 0, &[item], 3);
+        assert_eq!(keys(&v), ["game", "hidden", "items", "page", "source"]);
+        assert_eq!((v["items"][0]["kind"].as_str(), v["hidden"].as_u64()), (Some("mod"), Some(3)));
+        let a = aio(&b);
+        assert_eq!(keys(&a), ["appdata", "games", "launcher_url"]);
+        assert_eq!(a["launcher_url"], "https://bfmeladder.com");
+        assert_eq!(a["games"], json!([]));
+        // store_url is in every GameStatus.
+        let s = status(&b);
+        assert_eq!(s[8]["id"], "swgb");
+        assert_eq!(s[8]["store_url"], "https://store.steampowered.com/app/356500/");
+        assert!(s[0]["store_url"].is_null());
     }
 
     #[test]

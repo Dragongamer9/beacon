@@ -23,7 +23,7 @@ function mockApi() {
   const mk = (id, title, short, path, extra = {}) => ({
     id, title, short, path, family: "bfme", virtual_desktop: false, steam_appid: null, via_steam: false, installed: !!path, runner: runners[0], has_cd_key: true,
     resolution: { width: 1920, height: 1080 }, windowed: false, extra_args: "", prefix_ready: true,
-    runner_choice: null, selected_mod: null, ready: !!path, issues: path ? [] : [{ level: "error", message: "Game folder not set — scan or pick its folder." }],
+    runner_choice: null, selected_mod: null, ready: !!path, issues: path ? [] : [{ level: "error", message: "Game folder not set — scan or pick its folder." }], store_url: null,
     ...extra,
   });
   const state = {
@@ -37,10 +37,19 @@ function mockApi() {
       mk("uaw", "Universe at War: Earth Assault", "UaW", "/home/you/Games/Universe at War Earth Assault", { family: "other", resolution: null, issues: [{ level: "warn", message: "Games for Windows Live is gone: put the community xliveless xlive.dll in the game folder (campaign and skirmish only)." }] }),
       mk("exigo", "Armies of Exigo", "Exigo", null, { family: "other", resolution: null }),
       mk("rol", "Rise of Nations: Rise of Legends", "RoL", "/home/you/Games/Rise of Legends", { family: "other", resolution: null }),
-      mk("swgb", "Star Wars: Galactic Battlegrounds Saga", "SWGB", "/home/you/.local/share/Steam/steamapps/common/Star Wars Galactic Battlegrounds Saga/Game", { family: "other", resolution: null, virtual_desktop: true, steam_appid: 356500, edition: "Clone Campaigns", issues: [{ level: "warn", message: "Community version not set up yet — Game settings → Community version walks you through it." }] }),
+      mk("swgb", "Star Wars: Galactic Battlegrounds Saga", "SWGB", "/home/you/.local/share/Steam/steamapps/common/Star Wars Galactic Battlegrounds Saga/Game", { family: "other", resolution: null, virtual_desktop: true, steam_appid: 356500, store_url: "https://store.steampowered.com/app/356500/", edition: "Clone Campaigns", issues: [{ level: "warn", message: "Community version not set up yet — Game settings → Community version walks you through it." }] }),
     ],
     runners, default_runner: null, best_runner: runners[0].id,
     mods_dir: "/home/you/.local/share/beacon/mods", data_dir: "/home/you/.local/share/beacon", running: [],
+    native: false, aio_url: "https://bfmeladder.com",
+  };
+  const workshopItems = {
+    rotwk: [
+      { id: "6f1c2a7e-0001", name: "Edain Mod", version: "4.8.1", author: "Edain Team", description: "Lore-focused overhaul.", kind: "mod", game: "rotwk", size: 2500000000, downloads: 1234, artwork_url: null, installed: null },
+      { id: "6f1c2a7e-0002", name: "Rhûn Map Pack", version: "1.2", author: "Mapper", description: "Eight new skirmish maps.", kind: "maps", game: "rotwk", size: 42000000, downloads: 310, artwork_url: null, installed: null },
+    ],
+    bfme2: [{ id: "6f1c2a7e-0003", name: "Widescreen HUD", version: "2.0", author: "Someone", description: "HUD fixes for 16:9.", kind: "enhancement", game: "bfme2", size: 3000000, downloads: 99, artwork_url: null, installed: null }],
+    bfme1: [],
   };
   const mods = {
     bfme1: [],
@@ -146,6 +155,27 @@ function mockApi() {
       return cat.map(([id, name, kind, blurb, installed]) => ({ id, name, game: g, kind, blurb, url: "https://www.moddb.com/search?q=" + name, installed }));
     },
     find_mods: async () => { await delay(500); return [snap(), 0]; },
+    install_from: async (a) => {
+      setTimeout(() => emit("game-event", { game: a.game, phase: "preparing", message: "Extracting BFME2.iso (this can take a few minutes)" }), 300);
+      await handlers.launch(a);
+    },
+    workshop_list: async ({ game: g, search, page }) => {
+      await delay(500);
+      const all = (workshopItems[g] || []).filter((i) => !search || (i.name + i.description).toLowerCase().includes(search.toLowerCase()));
+      return { items: page ? [] : structuredClone(all), hidden: page ? 0 : 3, source: "https://bfmeladder.com" };
+    },
+    workshop_install: async ({ game: g, id }) => {
+      const it = workshopItems[g].find((i) => i.id === id);
+      for (const pct of [10, 40, 75, 95]) {
+        emit("workshop-progress", { game: g, id, pct, text: `Downloading ${it.name.toLowerCase().replace(/\W+/g, "_")}.big` });
+        await delay(350);
+      }
+      const m = { id: `${g}:${it.name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`, name: it.name, game: g, kind: "mod", path: `/home/you/.local/share/beacon/mods/${g}/${it.name}`, args: [], in_library: true };
+      mods[g].push(m);
+      it.installed = m.id;
+      return [snap(), `${it.name} ${it.version} installed`];
+    },
+    aio_info: () => ({ launcher_url: "https://bfmeladder.com", games: [], appdata: [] }),
     open_url: () => null,
     pick_folder: async () => { await delay(200); return "/home/you/Games/Picked"; },
     pick_file: async ({ kind }) => { await delay(200); return kind === "mod" ? "/home/you/Downloads/Some Mod.big" : "/home/you/Downloads/patch.exe"; },

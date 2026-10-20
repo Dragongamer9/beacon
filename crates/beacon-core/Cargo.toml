@@ -3,7 +3,7 @@ name = "beacon-core"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
-description = "Game detection, Wine/Proton prefixes and launching for the Battle for Middle-earth games"
+description = "Game detection, Wine/Proton prefixes (Linux) or native launching (Windows) for the Battle for Middle-earth games"
 
 [dependencies]
 serde.workspace = true
@@ -11,6 +11,14 @@ serde_json.workspace = true
 anyhow.workspace = true
 walkdir.workspace = true
 dirs.workspace = true
+# Workshop (fan content) downloads: blocking HTTPS with rustls, timeouts set per agent/request.
+ureq = "2.12"
+# The workshop lists an MD5 for each file.
+md-5 = "0.10"
+
+[target.'cfg(windows)'.dependencies]
+# Installed games on Windows: the keys the games' installers, EA/Origin and the BFME All-in-One launcher write.
+winreg = "0.52"
 
 [dev-dependencies]
 tempfile = "3"

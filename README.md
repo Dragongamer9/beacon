@@ -1,6 +1,6 @@
 # Beacon
 
-A Linux launcher for Lord of the Rings games. The shelf has two sections:
+A launcher for Lord of the Rings games, for Linux and Windows. The shelf has three sections:
 
 - **Battle for Middle-earth:** BFME, BFME II, The Rise of the Witch-king, and the fan-made **Age of the Ring Standalone**.
 - **Lord of the Rings games:** **The Lord of the Rings: Conquest** (Pandemic, 2009).
@@ -8,9 +8,9 @@ A Linux launcher for Lord of the Rings games. The shelf has two sections:
 
 The shelf scrolls sideways and follows your selection. New games are added in `crates/beacon-core/src/games.rs`. It is built for controllers, so it works on handhelds, on a TV, and inside Hearth's Game Mode.
 
-Beacon runs the games directly. It does not wrap the Windows All-in-One launcher. Each game gets its own Wine/Proton prefix, holding the registry keys the original installer used to write. Beacon also sets your resolution and manages mods.
+Beacon runs the games directly. It does not wrap the Windows All-in-One launcher (it finds the games that launcher installed, see [below](#bfme-all-in-one-launcher)). On Linux each game gets its own Wine/Proton prefix, holding the registry keys the original installer used to write; on Windows the games run as they are (see [Windows](#windows)). Beacon also sets your resolution and manages mods, including fan content from the [BFME workshop](#workshop).
 
-> Beacon doesn't include or download the games. Use your own install files and your own CD key.
+> Beacon doesn't include or download the games. Use your own discs, disc images or install files (see [Install from your own copy](#install-from-your-own-copy)) and your own CD key.
 
 ## What it does
 
@@ -24,6 +24,82 @@ Beacon runs the games directly. It does not wrap the Windows All-in-One launcher
 - **Handles mods** (see below), including mods that ship their own Windows launcher.
 - **Runs patches and installers inside a game's prefix,** so community patches and mod installers see the game.
 - **Logs** each game to `~/.local/share/beacon/logs/<game>.log`.
+
+## Windows
+
+Beacon also runs on Windows 10 and 11 (`beacon-app.exe`, with the `beacon.exe` command-line tool next to it). There's
+no Wine there, so:
+
+- **The games run directly**: the game's exe with its own folder as the working directory, `-win` / `-mod` / the
+  community editions' `MODPATH=` with ordinary Windows paths. Mods, the catalog, the workshop and community versions
+  work the same way.
+- **No prefixes and no runners.** The runner list is a single "Windows (native)" entry (`kind: "native"`); `setup`
+  has nothing to do (`needs_setup` is `false`), the virtual desktop doesn't apply, and "Launch through Steam" opens
+  `steam://rungameid/…`.
+- **Finding games** uses what the installers wrote in the registry (the EA keys of the BFME games, which the BFME
+  All-in-One launcher writes too; `App Paths`; the `Uninstall` entries of the disc installers, EA/Origin, Steam and
+  GOG) plus the usual folders: `Program Files (x86)\EA Games`, `Electronic Arts`, `Origin Games`, `SEGA`,
+  `LucasArts`, `Microsoft Games`, Steam libraries, `%USERPROFILE%\Games` and the All-in-One launcher's
+  `<drive>:\BFME1`, `BFME2`, `RotWK`.
+- **Resolution** goes into `%APPDATA%\<the game's user data folder>\Options.ini`, the folder named by the game's
+  `UserDataLeafName` registry value (the All-in-One launcher's names differ from EA's).
+- **Installers that need administrator rights** (most disc installers) get the UAC prompt.
+- **Settings and data:** `%APPDATA%\beacon\config.json` and `%LOCALAPPDATA%\beacon\` (mods, logs, downloads).
+  `BEACON_CONFIG` and `BEACON_DATA_DIR` work as on Linux.
+- Universe at War still needs xliveless's `xlive.dll` on Windows: Games for Windows Live is gone there too.
+
+## Install from your own copy
+
+Every game's page has **Install from your own copy** while the game isn't installed (`beacon install-from <game>
+<path>` on the command line). Pick one of:
+
+- **the installer** (`setup.exe`, AotR's installer…);
+- **a disc image** (`.iso`): Beacon extracts it into `~/.local/share/beacon/tmp/install-<game>-<time>/` with
+  `bsdtar` or `7z` (Windows: its built-in `tar.exe`, or 7-Zip), runs nothing through a shell, removes any links the
+  image carries, and keeps the files until the next install for that game (installers often start helpers that keep
+  reading them). Or mount the image yourself and pick its folder;
+- **a disc's folder** (**Disc folder**): Beacon finds the setup program (`setup.exe` at the top, the one
+  `autorun.inf` opens when it's a setup, or a `*setup*`/`*install*` exe two levels down).
+
+The setup runs in the game's own prefix on Linux (directly on Windows); when it closes, Beacon scans for the game.
+Multi-disc installs ask for the next disc as usual: mount or extract it and point the installer at it.
+
+## BFME All-in-One launcher
+
+The [BFME Foundation's All-in-One launcher](https://bfmeladder.com) installs BFME, BFME II and RotWK (Windows). Beacon
+**never downloads the games itself**; it finds the copies the launcher installed and uses them. The BFME games'
+pages and Launcher settings link to bfmeladder.com for getting the launcher.
+
+What Beacon reads (from the launcher's source):
+
+- **Game folders:** `<drive>:\BFME1`, `<drive>:\BFME2`, `<drive>:\RotWK`, and the `InstallPath` the launcher writes
+  under `HKLM\SOFTWARE\WOW6432Node\Electronic Arts\EA Games\The Battle for Middle-earth`,
+  `…\Electronic Arts\Electronic Arts\The Battle for Middle-earth II` and
+  `…\Electronic Arts\Electronic Arts\The Lord of the Rings, The Rise of the Witch-king`.
+- **On Linux**, the same keys inside Wine prefixes: Beacon reads `system.reg` in its own prefixes, `~/.wine`, Bottles,
+  `~/Games/<prefix>`, and any folder you give `beacon scan <folder>` (a prefix, or a folder of prefixes), and maps
+  `C:\…` into the prefix. The launcher's own folders (`drive_c/BFME1`…) are found by the normal scan too.
+- **The launcher's state:** `%APPDATA%\BFME Workshop\Config\active_patch_<n>.json` (the patch a game is synced to),
+  `<game>\mod.txt` (its active mod), and its workshop mods in `<drive>:\BFME Workshop\Mods\<Name>-<id>`, which
+  *Find mods on this PC* links into Beacon.
+
+`beacon aio` lists the games it manages.
+
+## Workshop
+
+The **Mods** sheet of BFME, BFME II and RotWK has **Workshop**: fan-made mods, maps, add-ons and patches from the BFME
+Foundation's workshop, through the same public API the All-in-One launcher uses (`bfmeladder.com/api/workshop/query`
+and `/workshop/download`). `beacon workshop <game>` and `beacon workshop-install <game> <id>` do the same.
+
+- **Fan content only.** Base game packages (`original-…`), EA's official patches (`official-…`) and snapshots of
+  someone's install are never listed and are refused by `workshop-install`. Inside a package, EA's executables,
+  `game.dat` and logo movies are skipped, and a package carrying the base game's own archives is refused.
+- **Downloads** are https only (redirects too), at most 4 GB per file and 8 GB per package, checked against the
+  workshop's MD5 and size, with every path checked (no `..`, no absolute paths or drive letters). They're written as
+  new files into a fresh folder, which then becomes `~/.local/share/beacon/mods/<game>/<Name>/` with a
+  `beacon-mod.json`. Files for other languages than Beacon's `language` setting are skipped.
+- After that it's a mod like any other: pick it in Mods, and the game starts with `-mod`. Map packs land under the
+  mod's `maps\` folder.
 
 ## Age of the Ring Standalone
 
@@ -177,7 +253,7 @@ On rows with ◂ ▸ (runner, resolution), use left and right to change the valu
 
 ## Install
 
-Download a package from [Releases](https://github.com/Dragongamer9/beacon/releases). Every package has Beacon's window (`beacon-app`) and the `beacon` command-line tool. You need WebKitGTK 4.1, which most desktops already have, and Wine or Proton to run the games.
+Download a package from [Releases](https://github.com/Dragongamer9/beacon/releases). Every package has Beacon's window (`beacon-app`) and the `beacon` command-line tool. On Linux you need WebKitGTK 4.1, which most desktops already have, and Wine or Proton to run the games. On Windows you need WebView2 (Windows 11 has it; the installers fetch it on Windows 10).
 
 | Package | Latest download |
 |---|---|
@@ -185,8 +261,15 @@ Download a package from [Releases](https://github.com/Dragongamer9/beacon/releas
 | Debian, Ubuntu, Mint, Pop!_OS | [beacon_amd64.deb](https://github.com/Dragongamer9/beacon/releases/latest/download/beacon_amd64.deb) |
 | Fedora, Bazzite, openSUSE | [beacon.x86_64.rpm](https://github.com/Dragongamer9/beacon/releases/latest/download/beacon.x86_64.rpm) |
 | Arch, CachyOS, anything else | [beacon-x86_64-linux.tar.gz](https://github.com/Dragongamer9/beacon/releases/latest/download/beacon-x86_64-linux.tar.gz) |
+| Windows (installer) | [Beacon-x64-setup.exe](https://github.com/Dragongamer9/beacon/releases/latest/download/Beacon-x64-setup.exe) |
+| Windows (MSI) | [Beacon-x64.msi](https://github.com/Dragongamer9/beacon/releases/latest/download/Beacon-x64.msi) |
+| Windows (portable) | [beacon-windows-x64.zip](https://github.com/Dragongamer9/beacon/releases/latest/download/beacon-windows-x64.zip) |
 
-Each release also has versioned copies (`Beacon-<version>-x86_64.AppImage`, `beacon_<version>_amd64.deb`, `beacon-<version>-1.x86_64.rpm`) and a `SHA256SUMS` file.
+Each release also has versioned copies (`Beacon-<version>-x86_64.AppImage`, `beacon_<version>_amd64.deb`, `beacon-<version>-1.x86_64.rpm`, `Beacon-<version>-x64-setup.exe`, `Beacon-<version>-x64.msi`) and a `SHA256SUMS` file.
+
+**Windows.** The installer (per user, no administrator rights needed) and the MSI put `beacon-app.exe` and
+`beacon.exe` in the same folder. The portable zip holds just those two exes. Hearth's Windows edition looks for exactly
+these names.
 
 **AppImage.** Make it executable and run it:
 ```sh
@@ -240,7 +323,15 @@ cargo install tauri-cli --version '^2'
 cd src-tauri && cargo tauri build    # app + AppImage/deb/rpm in target/release/bundle
 ```
 
-`cargo tauri build` builds the `beacon` CLI first (`beforeBuildCommand`) and puts it in each package as `/usr/bin/beacon`. The Build workflow (`.github/workflows/build.yml`) does all of this on every push and pull request, and makes a release for each `v*` tag.
+`cargo tauri build` builds the `beacon` CLI first (`beforeBuildCommand`) and puts it in each package as `/usr/bin/beacon`.
+
+On Windows (Rust stable with the MSVC toolchain, Node for the Tauri CLI): `cargo build --release -p beacon-cli` gives
+`target\release\beacon.exe`, and `cargo tauri build --bundles nsis,msi` (in `src-tauri`) the installers, with
+`tauri.windows.conf.json` adding `beacon.exe` next to `beacon-app.exe`.
+
+The Build workflow (`.github/workflows/build.yml`) does all of this on every push and pull request: `build-linux`
+(Ubuntu 22.04) and `build-windows` (windows-latest) each test and package; the `release` job makes one GitHub Release
+with both platforms' packages for a new version on main or a `v*` tag.
 
 During development, `cargo tauri dev` runs the app. You can also open `ui/index.html` in a browser: without Tauri, the UI runs against a built-in mock.
 
@@ -272,6 +363,11 @@ beacon edition uaw human-resistance      # or: auto
 beacon set-runner rotwk auto             # back to the automatic runner
 beacon run aotr --tool                   # AotR's own launcher, for updates
 beacon log rotwk --lines 50              # the end of a game's log
+beacon install-from bfme2 ~/Downloads/BFME2.iso          # install from your own disc image
+beacon install-from conquest /run/media/$USER/CONQUEST   # …or the disc's folder, or its setup.exe
+beacon workshop rotwk --search edain     # fan content from the BFME workshop
+beacon workshop-install rotwk <id> --select
+beacon aio                               # games the BFME All-in-One launcher installed
 ```
 
 ## For Hearth / scripting
@@ -294,6 +390,8 @@ Each prints one JSON document.
 | `paths` | `{config, data, prefixes, mods, logs, backups, games: {<game>: {prefix, log, mods}}}` |
 | `log <game> [--lines N]` | `{game, path, exists, lines: [...]}`: the last N lines (default 200, at most 2000) |
 | `launch <game> --dry-run` | `{ok, game, message, command: {program, args, env: [[k, v]], cwd, display}, setup_first}` |
+| `workshop <game> [--search S] [--page N]` | `{game, page, source, items: [{id, name, version, author, description, kind, game, size, downloads, artwork_url, installed}], hidden}` (since 0.0.6; BFME, BFME II and RotWK only) |
+| `aio` | `{launcher_url, games: [{game, dir, active_patch, active_mod}], appdata: [...]}` (since 0.0.6) |
 
 - **`GameStatus`:** `id, family, title, short, path, installed, runner, runner_choice, has_cd_key, resolution, windowed,
   extra_args, prefix_ready, virtual_desktop, steam_appid, via_steam, edition, selected_mod, tool_launcher, ready,
@@ -304,12 +402,19 @@ Each prints one JSON document.
   - `virtual_desktop_choice` (`null` = the game's default) and `virtual_desktop_default`;
   - `needs_setup`: whether `setup` has work to do, `null` when it can't tell yet;
   - `log_file`, `has_log`;
-  - `has_community`.
+  - `has_community`;
+  - `store_url`: the game's Steam store page when it's still sold there, else `null`. Only Galactic Battlegrounds
+    Saga has one (`https://store.steampowered.com/app/356500/`): Universe at War (Steam app 10430) was delisted in
+    2014, and Armies of Exigo and Rise of Legends were never on Steam. `steam_appid` is separate: it's set for copies
+    found in a Steam library.
   The CD key itself is never printed, only `has_cd_key`.
 - **Values:** `kind` (mods) is `mod` or `launcher`. `kind` (catalog) is `mod`, `patch` or `game`; `installed` is the
-  id of the installed mod it matches, or `null`. `kind` (runners) is `umu`, `proton` or `wine`. `action` (steps) is
-  `link`, `installer`, `merge` or `mods`. `chosen` is the edition picked (`null`: automatic). `level` is `error` or
-  `warn`.
+  id of the installed mod it matches, or `null`. `kind` (runners) is `umu`, `proton` or `wine`, and on Windows
+  `native` (the single "Windows (native)" runner, id `native`, empty `path`). `action` (steps) is `link`,
+  `installer`, `merge` or `mods`. `chosen` is the edition picked (`null`: automatic). `level` is `error` or `warn`.
+  `kind` (workshop) is `patch`, `mod`, `enhancement` or `maps`; `installed` is the Beacon mod id it's installed as,
+  or `null`; `size` is bytes; `hidden` counts the entries left out (base games, EA's official patches, snapshots,
+  other games).
 
 ### Changing things
 
@@ -344,10 +449,19 @@ is one JSON object:
 | `setup <game> [--force]` | yes | `did_work`, `options_file` |
 | `run <game> <exe>` / `run <game> --tool` | yes | `exit_code`, `found`, `installed` |
 | `launch <game> [--wait]` | | `pid`, `log`, and `exit_code` with `--wait` |
+| `install-from <game> <installer.exe \| image.iso \| folder>` | yes | `exit_code`, `setup`, `extracted` (where an image was extracted, or `null`), `found`, `installed` (since 0.0.6) |
+| `workshop-install <game> <id> [--select]` | yes | `id`, `name`, `version`, `kind`, `dir`, `files`, `bytes`, `skipped`, `mod` (as in `mods`), `selected` (since 0.0.6) |
 
 `run` runs an installer or patch inside the game's prefix (the game doesn't have to be installed yet: that's how a
 game's own installer is run), then scans for what it installed. `--tool` runs the game's `tool_launcher` (AotR's own
 launcher). When the program closes with an error, the result is `{"ok":false,"kind":"program","exit_code":N,…}`.
+`install-from` works the same way, after turning the player's own copy into a setup program (see
+[Install from your own copy](#install-from-your-own-copy)); a path that isn't an installer, image or folder is a
+`usage` error. `workshop` and `workshop-install` for a game the workshop doesn't cover are `usage` errors; asking
+`workshop-install` for a base game or EA patch fails (`failed`) without contacting the server.
+
+**Windows.** The CLI is `beacon.exe` with the same commands and JSON. `runners` answers in the same shape with the
+`native` runner; `setup` reports `did_work: false`; `paths` still lists the (unused) prefix folders.
 
 ### Exit codes
 
@@ -366,6 +480,7 @@ launcher). When the program closes with an error, the result is `{"ok":false,"ki
   Hearth also sets games up, changes their settings and manages mods through the JSON commands above, so everything
   Beacon does is in Hearth's Library; Beacon's own window is for outside Hearth.
 - `BEACON_CONFIG` and `BEACON_DATA_DIR` move the config file and data folder.
+- Windows (Ember): `beacon.exe` and `beacon-app.exe` sit in the same folder in every Windows package.
 
 ## Good to know
 
