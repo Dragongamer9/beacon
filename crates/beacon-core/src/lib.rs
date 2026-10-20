@@ -1473,7 +1473,7 @@ mod tests {
         assert!(!e.beacon.paths.data_dir.join("prefixes").exists(), "no prefixes on Windows");
 
         e.beacon.game_mut(g).windowed = true;
-        let mods = e.beacon.paths.mods_dir().join("bfme2/My Mod");
+        let mods = e.beacon.paths.mods_dir().join("bfme2").join("My Mod");
         fs::create_dir_all(&mods).unwrap();
         fs::write(mods.join("my.big"), b"").unwrap();
         let c = e.beacon.launch_command(g, Some("bfme2:my-mod")).unwrap();

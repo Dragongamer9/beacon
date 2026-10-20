@@ -544,6 +544,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]   // Wine prefixes exist on Linux only
     fn windows_paths_in_a_prefix() {
         let pfx = Path::new("/p/pfx");
         assert_eq!(win_to_host(pfx, r"C:\BFME1").unwrap(), Path::new("/p/pfx/drive_c/BFME1"));

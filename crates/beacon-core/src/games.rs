@@ -384,6 +384,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]   // makes a Wine-style "dosdevices/c:" folder, which isn't a valid name on Windows
     fn scan_finds_games_case_insensitively() {
         let t = tempfile::tempdir().unwrap();
         let b1 = t.path().join("Games/BFME1");
