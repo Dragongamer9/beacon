@@ -43,6 +43,7 @@ pub struct Issue {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GameStatus {
     pub id: GameId,
+    pub family: games::Family,
     pub title: String,
     pub short: String,
     pub path: Option<PathBuf>,
@@ -184,12 +185,13 @@ impl Beacon {
         if runner.is_none() {
             issues.push(Issue { level: Level::Error, message: "No Wine, Proton or umu-launcher found.".into() });
         }
-        if g != GameId::Aotr && cfg.cd_key.as_deref().map(str::trim).unwrap_or("").is_empty() {
+        if g.wants_cd_key() && cfg.cd_key.as_deref().map(str::trim).unwrap_or("").is_empty() {
             issues.push(Issue { level: Level::Warn, message: "No CD key set. Add the key from your copy if the game asks you to reinstall.".into() });
         }
         let selected_mod = self.config.selected_mod.get(&g).cloned().filter(|id| self.find_mod(g, id).is_some());
         GameStatus {
             id: g,
+            family: g.family(),
             title: g.title().into(),
             short: g.short().into(),
             path: cfg.path.clone(),
@@ -289,6 +291,12 @@ impl Beacon {
     pub fn registry_for(&self, g: GameId) -> Result<String> {
         if g == GameId::Aotr {
             return self.aotr_registry();
+        }
+        if !g.is_sage() {
+            // Non-BFME games (Conquest) get their registry from their own
+            // installer; an empty import just creates the prefix.
+            self.game_dir(g).ok_or_else(|| anyhow!("{} folder not set or missing {}", g.short(), g.exe()))?;
+            return Ok("REGEDIT4\r\n".into());
         }
         let mut entries = Vec::new();
         let mut owned: Vec<(GameId, PathBuf, Option<String>)> = Vec::new();
@@ -406,6 +414,9 @@ impl Beacon {
 
     /// Write the chosen resolution into Options.ini inside the prefix.
     pub fn apply_options(&self, g: GameId) -> Result<Option<PathBuf>> {
+        if !g.is_sage() {
+            return Ok(None);
+        }
         let Some(res) = self.game(g).resolution else { return Ok(None) };
         let pfx = self.paths.prefix_root(g).join("pfx");
         if !pfx.join("drive_c").is_dir() {
@@ -442,7 +453,10 @@ impl Beacon {
         }
 
         let mut args = Vec::new();
-        if cfg.windowed {
+        if let Some(m) = chosen.as_ref().filter(|_| !g.is_sage()) {
+            bail!("{} doesn't load mods with -mod; install \"{}\" into the game folder or add its own launcher instead", g.short(), m.name);
+        }
+        if cfg.windowed && g.is_sage() {
             args.push("-win".to_string());
         }
         if let Some(m) = &chosen {
@@ -661,6 +675,34 @@ mod tests {
         // Pointing at the install root works too.
         e.beacon.set_path(GameId::Aotr, &root).unwrap();
         assert_eq!(e.beacon.game(GameId::Aotr).path.unwrap(), root.join("aotr"));
+    }
+
+    #[test]
+    fn conquest_runs_plain() {
+        let mut e = env();
+        let dir = e.games.join("LOTR Conquest");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("Conquest.exe"), b"").unwrap();
+        e.beacon.scan(&[]);
+        let g = GameId::Conquest;
+        assert_eq!(e.beacon.game(g).path.unwrap(), dir);
+        let st = e.beacon.status(g);
+        assert!(st.ready && st.issues.is_empty(), "{:?}", st.issues);
+        assert_eq!(st.family, games::Family::Lotr);
+        // No BFME switches, no EA keys, no Options.ini.
+        e.beacon.game_mut(g).windowed = true;
+        e.beacon.game_mut(g).resolution = Resolution::parse("1280x800");
+        let cmd = e.beacon.launch_command(g, None).unwrap();
+        assert!(cmd.args[0].ends_with("LOTR Conquest/Conquest.exe"));
+        assert_eq!(cmd.args.len(), 1);
+        assert_eq!(e.beacon.registry_for(g).unwrap(), "REGEDIT4\r\n");
+        assert!(e.beacon.setup(g, true).unwrap());
+        assert!(e.beacon.apply_options(g).unwrap().is_none());
+        // -mod style mods are refused with a clear message; launchers are fine.
+        let big = e.games.join("x.big");
+        fs::write(&big, b"").unwrap();
+        let m = e.beacon.link_mod(g, &big, Some("X")).unwrap();
+        assert!(e.beacon.launch_command(g, Some(&m.id)).unwrap_err().to_string().contains("-mod"));
     }
 
     #[test]

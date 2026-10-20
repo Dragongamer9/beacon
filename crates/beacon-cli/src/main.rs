@@ -8,7 +8,7 @@ use std::io::BufRead;
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "beacon", version, about = "Linux launcher for The Battle for Middle-earth games")]
+#[command(name = "beacon", version, about = "Linux launcher for Lord of the Rings games (BFME, AotR, Conquest)")]
 struct Cli {
     #[command(subcommand)]
     cmd: Option<Cmd>,
@@ -83,7 +83,7 @@ enum Cmd {
 }
 
 fn game(s: &str) -> Result<GameId> {
-    GameId::parse(s).ok_or_else(|| anyhow!("unknown game \"{s}\" (use bfme1, bfme2, rotwk or aotr)"))
+    GameId::parse(s).ok_or_else(|| anyhow!("unknown game \"{s}\" (use bfme1, bfme2, rotwk, aotr or conquest)"))
 }
 
 fn on_off(s: &str) -> Result<bool> {

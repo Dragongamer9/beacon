@@ -65,6 +65,13 @@ pub fn entries() -> Vec<CatalogEntry> {
         e("aotr-standalone", "Age of the Ring Standalone", Aotr, Game,
           "The fan remake, with both base games bundled — no RotWK or CD key needed. Download the installer zip (about 14 GB), extract it, then use Install in Beacon.",
           "https://www.moddb.com/mods/the-horse-lords-a-total-modification-for-bfme/downloads/age-of-the-ring-version-90".into(), &[]),
+        // ---- LOTR: Conquest
+        e("mordorwide", "MordorWide (online multiplayer)", Conquest, Patch,
+          "Community re-implementation of EA's old Conquest servers. Needs game patch 1.1 and a patched Conquest.exe; their patch turns off SSL checks on login, so use a unique password.",
+          "https://mordorwi.de/howtoplay".into(), &["mordorwide"]),
+        e("conquest-fixes", "Conquest Fixes", Conquest, Mod,
+          "Bug fixes for the vanilla game and restored cut levels, without changing balance.",
+          "https://www.moddb.com/games/lotr-conquest/downloads/conquest-fixes".into(), &["conquest fixes", "conquestfixes"]),
         // ---- BFME II
         e("patch-222", "BFME Patch 2.22 / All-in-One", Bfme2, Patch,
           "Community patch for BFME II, also packaged with the All in One launcher. Run its installer in BFME II's prefix.",
@@ -189,7 +196,7 @@ mod tests {
         ids.sort();
         ids.dedup();
         assert_eq!(ids.len(), all.len());
-        assert!(all.iter().all(|e| e.url.starts_with("https://www.moddb.com/")));
+        assert!(all.iter().all(|e| e.url.starts_with("https://")));
     }
 
     #[test]
