@@ -272,7 +272,8 @@ mod tests {
         let uaw = editions(GameId::Uaw);
         let cp = locate(&uaw[0], &g).unwrap().unwrap();
         assert!(cp.ends_with("Community_Patch_2.0"));
-        assert_eq!(modpath_arg(&g, &cp), "MODPATH=mods\\Community_Patch_2.0");
+        // Case-insensitive on Windows (the folder may be found as "Mods" there).
+        assert_eq!(modpath_arg(&g, &cp).to_lowercase(), "modpath=mods\\community_patch_2.0");
         assert!(locate(&uaw[1], &g).is_none());
         assert_eq!(locate(&uaw[2], &g), Some(None), "vanilla is always there");
     }
