@@ -51,6 +51,10 @@ pub struct GameConfig {
     pub virtual_desktop: Option<bool>,
     /// For Steam copies: hand the launch to Steam instead of Beacon's prefix.
     pub via_steam: bool,
+    /// Chosen edition (Other Games); `None` = community edition if installed.
+    pub edition: Option<String>,
+    /// Community-version setup steps the player has completed.
+    pub done_steps: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

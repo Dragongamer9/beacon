@@ -129,7 +129,7 @@ impl GameId {
             GameId::Exigo => &["Exigo.exe"],
             GameId::Rol => &["RiseOfLegends.exe", "rol.exe"],
             // Saga: Clone Campaigns exe first; the base-game exe has a CD check.
-            GameId::Swgb => &["battlegrounds_x1.exe", "Battlegrounds.exe"],
+            GameId::Swgb => &["battlegrounds_x1.exe", "battlegrounds_x2.exe", "Battlegrounds.exe"],
         }
     }
 
@@ -220,6 +220,11 @@ pub fn find_exe_in(dir: &Path, game: GameId) -> Option<PathBuf> {
     game.exes().iter().find_map(|want| {
         files.iter().find(|p| p.file_name().map(|n| n.to_string_lossy().eq_ignore_ascii_case(want)).unwrap_or(false)).cloned()
     })
+}
+
+/// A specific exe in `dir`, matched case-insensitively.
+pub fn find_exe_in_named(dir: &Path, name: &str) -> Option<PathBuf> {
+    std::fs::read_dir(dir).ok()?.flatten().map(|e| e.path()).find(|p| p.is_file() && p.file_name().map(|n| n.to_string_lossy().eq_ignore_ascii_case(name)).unwrap_or(false))
 }
 
 fn game_for_file(name: &str) -> Option<GameId> {

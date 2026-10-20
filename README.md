@@ -92,6 +92,32 @@ These all work the same way as Conquest:
 
 Of these, only Galactic Battlegrounds Saga is still sold. For the others, use your own discs or installers.
 
+### Community versions
+
+Each Other Game is meant to be played on its community version. Game settings opens with a **Community version** section: a **Version** picker (for games that have editions) and numbered setup steps.
+
+Each step works the same way:
+- **Page** opens the download page.
+- The main action (**Add**, or **Run** for installers) takes what you downloaded:
+  - an archive (`.zip`, `.7z`, `.rar`…), extracted with 7-Zip, bsdtar or unzip, whichever is installed;
+  - a folder you already extracted (**Folder**);
+  - a single file;
+  - or an installer, which runs in the game's prefix.
+- Beacon merges files into the game folder the way Windows would, ignoring case, so `DATA` lands in `Data`.
+- Any file it replaces is first copied to `~/.local/share/beacon/backups/<game>/<time>/`.
+- Finished steps get a tick.
+
+| Game | Community version | Setup steps |
+|---|---|---|
+| **Galactic Battlegrounds** | **Expanding Fronts** (1.5.5, Sept 2025): new factions, campaign and balance, with online play through Voobly. It runs from its own `battlegrounds_x2.exe`. | Add the FULL Expanding Fronts zip; Beacon merges its `GAME` folder into your `Game` folder. |
+| **Universe at War** | **Community Patch** (fan-voted fixes and balance), or **Human Resistance Reborn** (adds a Human faction). Both load with the engine's `MODPATH=Mods\…` switch, so the base game stays untouched. | 1. Official Patch 3 (Steam copies already have it). 2. Community Patch, added under `Mods\CommunityPatch`. 3. Human Resistance Reborn (optional), added under `Mods\HumanResistanceReborn`. 4. xliveless `xlive.dll`. |
+| **Armies of Exigo** | **Patch 1.4**, the version the community plays. | 1. Patch 1.4 installer. 2. Integrated graphics fix, if needed. 3. Community forum. |
+| **Rise of Legends** | Latest official patch plus the community crash fix. The **User Patch Project** is still in progress on the RoL Discord. | 1. Official patch installer. 2. Long-game crash fix. 3. User Patch Project page. |
+
+The **Version** picker defaults to the community edition whenever one is installed; you can switch back to the original any time. Until a community version is set up, the game shows a note on its page.
+
+With **Launch through Steam** on, Steam starts its own `player.exe` and the Version picker has no effect. Leave it off to play Expanding Fronts.
+
 ## Mods
 
 The **Mods** sheet (Y on a controller, M on a keyboard) lists everything Beacon knows about for the selected game. Picking one makes it that game's default.
@@ -194,6 +220,10 @@ beacon run conquest /run/media/$USER/CONQUEST/setup.exe   # install Conquest fro
 beacon launch conquest
 beacon virtual-desktop swgb on && beacon resolution swgb 1280x1024
 beacon via-steam swgb on                 # let Steam launch your Steam copy
+beacon community swgb                    # community version: editions + steps
+beacon add-files swgb expanding-fronts ~/Downloads/EF_1.5.5_Full.zip
+beacon add-files uaw community-patch ~/Downloads/Community_Patch_2.0.7z
+beacon edition uaw human-resistance      # or: auto
 ```
 
 ## Hearth integration

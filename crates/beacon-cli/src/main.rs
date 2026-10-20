@@ -35,6 +35,12 @@ enum Cmd {
     Resolution { game: String, value: String },
     /// Windowed mode on/off.
     Windowed { game: String, value: String },
+    /// Community versions for a game: editions and setup steps.
+    Community { game: String },
+    /// Pick the edition to launch (`auto` = community edition if installed).
+    Edition { game: String, id: String },
+    /// Add a community download (archive, folder or file) for a setup step.
+    AddFiles { game: String, step: String, path: PathBuf },
     /// Run a non-BFME game inside a Wine virtual desktop: on, off or default.
     VirtualDesktop { game: String, value: String },
     /// For Steam copies (UaW, SWGB): launch through Steam on/off.
@@ -197,6 +203,47 @@ fn main() -> Result<()> {
         }
         Cmd::Windowed { game: g, value } => {
             b.game_mut(game(&g)?).windowed = on_off(&value)?;
+            b.save()?;
+        }
+        Cmd::Community { game: g } => {
+            let g = game(&g)?;
+            let c = b.community(g);
+            if c.editions.is_empty() && c.steps.is_empty() {
+                println!("{} has no community version setup.", g.short());
+            }
+            for e in &c.editions {
+                let mark = if e.active { "*" } else if e.installed { "+" } else { " " };
+                println!("{mark} {:<20} {}{}", e.edition.id, e.edition.name, if e.edition.community { " (community)" } else { "" });
+            }
+            if !c.editions.is_empty() {
+                println!("  (* launches, + installed)\n");
+            }
+            for st in &c.steps {
+                println!("[{}] {:<18} {}\n    {}", if st.done { "x" } else { " " }, st.step.id, st.step.title, st.step.detail);
+                if let Some(u) = st.step.url {
+                    println!("    {u}");
+                }
+            }
+        }
+        Cmd::Edition { game: g, id } => {
+            let g = game(&g)?;
+            b.set_edition(g, (id != "auto").then_some(id.as_str()))?;
+            b.save()?;
+        }
+        Cmd::AddFiles { game: g, step, path } => {
+            let g = game(&g)?;
+            let step_def = beacon_core::editions::steps(g).into_iter().find(|s| s.id == step).ok_or_else(|| anyhow!("no step {step}; see `beacon community {}`", g.slug()))?;
+            if step_def.action == beacon_core::editions::Action::Installer {
+                b.setup(g, false)?;
+                let cmd = b.run_in_prefix_command(g, &path)?;
+                let st = b.spawn_logged(g, &cmd)?.wait()?;
+                if st.success() {
+                    b.mark_step(g, &step);
+                }
+                println!("Installer exited: {st}");
+            } else {
+                println!("{}", b.add_files(g, &step, &path)?);
+            }
             b.save()?;
         }
         Cmd::VirtualDesktop { game: g, value } => {

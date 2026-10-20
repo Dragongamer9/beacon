@@ -212,8 +212,13 @@ button.nav svg { width: 1.2em; height: 1.2em; }
 .row-btn { padding: 12px 16px; border-radius: 12px; color: var(--muted) !important; width: 100%; }
 .row-btn.focused { color: var(--text) !important; background: rgba(239, 227, 200, .06); }
 .row-btn.danger.focused { color: var(--danger) !important; }
-.mod-line { display: grid; grid-template-columns: 1fr auto; gap: 6px; align-items: stretch; }
-.mod-line .remove { padding: 0 14px; border-radius: 12px; color: var(--faint) !important; }
+.mod-line { display: grid; grid-template-columns: 1fr auto; grid-auto-flow: column; gap: 6px; align-items: stretch; }
+.mod-line .remove, .mod-line .side { padding: 0 14px; border-radius: 12px; color: var(--faint) !important; }
+.mod-line .side { font-size: .82em; font-weight: 700; background: rgba(239, 227, 200, .04) !important; }
+.mod-line .side.focused { color: var(--text) !important; }
+.step .sub { white-space: normal; }
+.step .num { display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; margin-right: 8px; font-size: .78em; background: rgba(239, 227, 200, .1); color: var(--muted); vertical-align: 1px; }
+.step.done .num { background: var(--ok); color: #13200d; }
 .mod-line .remove.focused { color: var(--danger) !important; }
 .section-label { margin: 14px 8px 4px; color: var(--faint); font-size: .76em; letter-spacing: .2em; text-transform: uppercase; font-weight: 700; }
 .section-label:first-child { margin-top: 0; }
