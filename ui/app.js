@@ -62,17 +62,25 @@ function modName(g) {
 
 // ---------------------------------------------------------------- main screen
 
+const FAMILIES = [
+  ["bfme", "Battle for Middle-earth"],
+  ["lotr", "Lord of the Rings games"],
+];
+const KICKERS = { aotr: "Fan-made standalone", conquest: "Pandemic Studios · 2009" };
+const isSage = (g) => g.family === "bfme";
+
 function buildShelf() {
   const shelf = $("#shelf");
-  shelf.innerHTML = snap.games
-    .map(
-      (g, i) => `
+  const tile = (g, i) => `
       <button class="nav tile" data-group="shelf" data-game="${g.id}" data-index="${i}">
         <svg class="emblem" viewBox="0 0 120 120"><use href="#emblem-${g.id}"/></svg>
-        <span><span class="t-short">${esc(g.short)}</span><span class="t-state"><span class="dot"></span><span class="t-text"></span></span></span>
-      </button>`
-    )
-    .join("");
+        <span style="min-width:0"><span class="t-short">${esc(g.short)}</span><span class="t-state"><span class="dot"></span><span class="t-text"></span></span></span>
+      </button>`;
+  shelf.innerHTML = FAMILIES.map(([fam, label]) => {
+    const members = snap.games.map((g, i) => [g, i]).filter(([g]) => g.family === fam);
+    if (!members.length) return "";
+    return `<div class="shelf-group" style="flex:${members.length}"><p class="shelf-label">${esc(label)}</p><div class="shelf-tiles">${members.map(([g, i]) => tile(g, i)).join("")}</div></div>`;
+  }).join("");
   shelf.querySelectorAll(".tile").forEach((tile) => {
     const i = Number(tile.dataset.index);
     tile.addEventListener("focus", () => select(i));
@@ -101,7 +109,7 @@ function renderHero() {
   const g = game();
   document.body.dataset.accent = g.id;
   $("#hero-title").textContent = g.title;
-  $("#hero-kicker").textContent = g.id === "aotr" ? "Fan-made standalone" : "The Lord of the Rings";
+  $("#hero-kicker").textContent = KICKERS[g.id] ?? "The Lord of the Rings";
   $("#hero-emblem").setAttribute("href", `#emblem-${g.id}`);
   const running = isRunning(g.id);
   const chips = [];
@@ -109,7 +117,7 @@ function renderHero() {
   else if (g.ready) chips.push(`<span class="chip ok"><span class="dot"></span>Ready</span>`);
   else chips.push(`<span class="chip bad"><span class="dot"></span>${g.installed ? "Needs attention" : "Not found"}</span>`);
   if (g.runner) chips.push(`<span class="chip">${esc(g.runner.name)}</span>`);
-  chips.push(`<span class="chip">${g.resolution ? resText(g.resolution) : "Game's resolution"}${g.windowed ? " · windowed" : ""}</span>`);
+  if (isSage(g)) chips.push(`<span class="chip">${g.resolution ? resText(g.resolution) : "Game's resolution"}${g.windowed ? " · windowed" : ""}</span>`);
   $("#hero-chips").innerHTML = chips.join("");
 
   const err = g.issues.find((i) => i.level === "error");
@@ -121,7 +129,7 @@ function renderHero() {
   const play = $("#btn-play");
   const label = $("#play-label");
   if (!g.installed) {
-    label.textContent = g.id === "aotr" ? "Install Age of the Ring" : "Locate game folder";
+    label.textContent = g.id === "aotr" ? "Install Age of the Ring" : g.id === "conquest" ? "Install or locate Conquest" : "Locate game folder";
     play.disabled = false;
   } else {
     label.textContent = running ? "Running…" : "Play";
@@ -154,7 +162,7 @@ function render() {
 
 async function play() {
   const g = game();
-  if (!g.installed) return g.id === "aotr" ? open("game", $("#sheet-game")) : locate(g);
+  if (!g.installed) return g.id === "aotr" || g.id === "conquest" ? open("game", $("#sheet-game")) : locate(g);
   if (!g.ready || isRunning(g.id)) return;
   try {
     await api.call("launch", { game: g.id, modId: null });
@@ -197,6 +205,8 @@ function renderModsSheet() {
   const g = game();
   const sheet = $("#sheet-mods");
   sheet.querySelector("[data-game-short]").textContent = g.title;
+  $("#btn-add-mod-folder").hidden = !isSage(g);
+  $("#btn-add-mod-file").querySelector("svg").nextSibling.textContent = isSage(g) ? "Add mod file (.big or launcher)" : "Add a mod's launcher (.exe)";
   const mods = modsCache[g.id] || [];
   const keep = nav.current()?.dataset.key;
   let html = rowHTML({ key: "vanilla", label: "Vanilla", sub: "The game as it shipped", selected: !g.selected_mod, tick: !g.selected_mod });
@@ -206,7 +216,10 @@ function renderModsSheet() {
       ? row
       : `<div class="mod-line">${row}<button class="nav remove" data-key="rm:${esc(m.id)}" aria-label="Remove ${esc(m.name)}"><svg viewBox="0 0 24 24"><use href="#i-x"/></svg></button></div>`;
   }
-  if (!mods.length) html += `<p class="section-label">No mods yet — add a .big file, a mod folder, or a mod's own launcher.</p>`;
+  if (!mods.length)
+    html += isSage(g)
+      ? `<p class="section-label">No mods yet — add a .big file, a mod folder, or a mod's own launcher.</p>`
+      : `<p class="section-label" style="text-transform:none;letter-spacing:0;font-weight:400">${esc(g.short)} mods usually install into the game folder — run their installer from Game settings. Browse the catalog for known ones.</p>`;
   const rows = $("#mods-rows");
   rows.innerHTML = html;
   rows.querySelectorAll(".row").forEach((r) =>
@@ -313,6 +326,8 @@ function renderGameSheet() {
   const res = resText(g.resolution);
   const rows = $("#game-rows");
   const aotr = g.id === "aotr";
+  const sage = isSage(g);
+  const conquest = g.id === "conquest";
   rows.innerHTML = [
     `<p class="section-label">Install</p>`,
     ...(aotr && !g.installed
@@ -321,8 +336,11 @@ function renderGameSheet() {
           rowHTML({ key: "aotr-install", label: "2 · Run the installer", sub: "Pick the installer .exe from the extracted folder", value: "Choose" }),
         ]
       : []),
-    rowHTML({ key: "folder", label: aotr && !g.installed ? "Already installed? Locate it" : "Game folder", sub: g.path || (aotr ? "The Age of the Ring folder, e.g. …/drive_c/AgeoftheRing" : "Not set"), value: "Change" }),
-    aotr ? "" : fieldHTML({
+    ...(conquest && !g.installed
+      ? [rowHTML({ key: "conquest-install", label: "Run the game's installer", sub: "Your disc or setup files — it installs into Conquest's own Wine prefix", value: "Choose" })]
+      : []),
+    rowHTML({ key: "folder", label: (aotr || conquest) && !g.installed ? "Already installed? Locate it" : "Game folder", sub: g.path || (aotr ? "The Age of the Ring folder, e.g. …/drive_c/AgeoftheRing" : "Not set"), value: "Change" }),
+    !sage || aotr ? "" : fieldHTML({
       key: "cdkey",
       label: "CD key",
       placeholder: g.has_cd_key ? "Saved — type a new one to replace it" : "Key from your copy of the game",
@@ -330,10 +348,14 @@ function renderGameSheet() {
     }),
     `<p class="section-label">Compatibility</p>`,
     rowHTML({ key: "runner", label: "Runner", sub: "Wine or Proton build used for this game", value: runnerName, cycle: true }),
-    `<p class="section-label">Display</p>`,
-    rowHTML({ key: "res", label: "Resolution", sub: res === RESOLUTIONS.native ? "Matches this screen" : "Written to Options.ini before each launch", value: res || "Game's setting", cycle: true }),
-    rowHTML({ key: "windowed", label: "Windowed", sub: "Adds -win", extra: `<span class="toggle${g.windowed ? " on" : ""}"></span>` }),
-    fieldHTML({ key: "args", label: "Extra arguments", placeholder: "-noshellmap", value: g.extra_args }),
+    ...(conquest
+      ? [`<p class="section-label">Online</p>`, rowHTML({ key: "mordorwide", label: "Play online with MordorWide", sub: "Community servers; needs patch 1.1 and their exe patch", value: "Guide" })]
+      : []),
+    `<p class="section-label">${sage ? "Display" : "Launch"}</p>`,
+    ...(sage ? [] : [`<p class="section-label" style="text-transform:none;letter-spacing:0;font-weight:400">Resolution, window mode and controls are set in ${esc(g.short)}'s own options menu.</p>`]),
+    sage && rowHTML({ key: "res", label: "Resolution", sub: res === RESOLUTIONS.native ? "Matches this screen" : "Written to Options.ini before each launch", value: res || "Game's setting", cycle: true }),
+    sage && rowHTML({ key: "windowed", label: "Windowed", sub: "Adds -win", extra: `<span class="toggle${g.windowed ? " on" : ""}"></span>` }),
+    fieldHTML({ key: "args", label: "Extra arguments", placeholder: sage ? "-noshellmap" : "Optional", value: g.extra_args }),
     `<p class="section-label">Tools</p>`,
     ...(aotr && g.tool_launcher
       ? [`<button class="nav row-btn" data-key="aotr-launcher"><svg viewBox="0 0 24 24"><use href="#i-open"/></svg>Open the AotR Launcher for updates (may not work under Wine)</button>`]
@@ -342,7 +364,7 @@ function renderGameSheet() {
     `<button class="nav row-btn" data-key="log"><svg viewBox="0 0 24 24"><use href="#i-scroll"/></svg>Open log</button>`,
     `<button class="nav row-btn" data-key="openfolder"><svg viewBox="0 0 24 24"><use href="#i-open"/></svg>Open game folder</button>`,
     `<div class="cmd" id="cmd-preview">…</div>`,
-  ].join("");
+  ].filter(Boolean).join("");
 
   const on = (key, ev, fn) => rows.querySelector(`[data-key="${key}"]`)?.addEventListener(ev, fn);
   on("folder", "click", () => locate(g));
@@ -362,6 +384,8 @@ function renderGameSheet() {
   on("windowed", "click", () => saveDisplay({ windowed: !g.windowed }));
   on("aotr-get", "click", () => act(() => api.call("open_url", { url: AOTR_URL }), "Opened ModDB in your browser"));
   on("aotr-install", "click", () => runInstaller(g));
+  on("conquest-install", "click", () => runInstaller(g));
+  on("mordorwide", "click", () => act(() => api.call("open_url", { url: "https://mordorwi.de/howtoplay" }), "Opened the MordorWide guide"));
   on("aotr-launcher", "click", () => runInstaller(g, g.tool_launcher));
   const key = rows.querySelector("#f-cdkey");
   key?.addEventListener("change", () => act(() => api.call("set_cd_key", { game: g.id, key: key.value }), key.value.trim() ? "CD key saved" : "CD key cleared"));

@@ -1,6 +1,9 @@
 # Beacon
 
-A Linux launcher for **The Battle for Middle-earth**, **BFME II**, **The Rise of the Witch-king** and the fan-made **Age of the Ring Standalone**. It is built for controllers, so it works on handhelds, on a TV, and inside Hearth's Game Mode.
+A Linux launcher for Lord of the Rings games. The shelf has two sections:
+
+- **Battle for Middle-earth:** BFME, BFME II, The Rise of the Witch-king, and the fan-made **Age of the Ring Standalone**.
+- **Lord of the Rings games:** **The Lord of the Rings: Conquest** (Pandemic, 2009). More games can join this section. It is built for controllers, so it works on handhelds, on a TV, and inside Hearth's Game Mode.
 
 Beacon runs the games directly. It does not wrap the Windows All-in-One launcher. Each game gets its own Wine/Proton prefix, holding the registry keys the original installer used to write. Beacon also sets your resolution and manages mods.
 
@@ -43,6 +46,27 @@ If AotR is already installed somewhere, for example in a Lutris prefix, use *Alr
 - With plain Wine, run `WINEPREFIX=~/.local/share/beacon/prefixes/aotr/pfx winetricks vcrun2019 d3dx9`.
 - Or try another Proton build in Game settings → Runner.
 
+## The Lord of the Rings: Conquest
+
+Conquest isn't sold anywhere now, so Beacon works with your own disc or setup files.
+
+**Getting it in.** On the Conquest tile, press *Install or locate Conquest*:
+- **Run the game's installer.** Pick the `setup.exe` from your disc or files. It installs into Conquest's own prefix and writes its own registry entries, which is why Beacon doesn't add any for Conquest. Beacon rescans when the installer closes.
+- **Already installed?** Point Beacon at the folder holding `Conquest.exe`. *Find games* also detects it, as long as a nearby folder name says Conquest or LOTR (`Conquest.exe` is too generic a name to trust on its own).
+
+**Running it.**
+- Beacon starts `Conquest.exe` in its prefix with your chosen runner.
+- Resolution, window mode and controls are set in Conquest's own options menu. The BFME-only settings (Options.ini resolution, `-win`, `-mod`, CD key) don't apply to it.
+
+**Online with MordorWide.** MordorWide re-implements EA's old Conquest servers. Game settings → *Play online with MordorWide* opens their guide. In short:
+1. Patch the game to **1.1**.
+2. Patch `Conquest.exe` the way their guide describes.
+3. Create an EA Nation account in-game, using a CD key ending in `-MORDORWIDE`.
+
+Their exe patch turns off SSL checking on the login, so use a password you don't use anywhere else. You can run patches and installers with *Run a patch or installer in this game's prefix*.
+
+**Mods.** Conquest mods such as *Conquest Fixes* install into the game folder rather than loading with `-mod`. Run their installer in the prefix, or add their launcher in Mods. The catalog lists MordorWide and Conquest Fixes.
+
 ## Mods
 
 The **Mods** sheet (Y on a controller, M on a keyboard) lists everything Beacon knows about for the selected game. Picking one makes it that game's default.
@@ -67,6 +91,7 @@ There are three ways to add mods:
 The **Mod catalog** lists the major mods and community patches for all three games:
 
 - **AotR:** the Standalone installer.
+- **Conquest:** MordorWide (online), Conquest Fixes.
 - **RotWK:** Edain, Age of the Ring 8.x (the older mod version), The Dwarf Holds, Elven Alliance, Patch 2.02.
 - **BFME II:** Patch 2.22, Divide and Conquer, Helm's Deep: Last Hope.
 - **BFME:** Patch 1.08, Middle-earth Extended Edition, Return of Shadow, Shadow and Flame, King of the West, Legends of the 3rd Age.
@@ -135,6 +160,8 @@ beacon run rotwk ~/Downloads/patch_installer.exe
 beacon launch rotwk [--mod <id> | --vanilla] [--dry-run] [--wait]
 beacon run aotr ~/Downloads/AotR/AotR_Standalone_Installer.exe   # install AotR, then:
 beacon launch aotr
+beacon run conquest /run/media/$USER/CONQUEST/setup.exe   # install Conquest from disc
+beacon launch conquest
 ```
 
 ## Hearth integration

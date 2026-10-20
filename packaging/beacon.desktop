@@ -1,12 +1,12 @@
 [Desktop Entry]
 Type=Application
 Name=Beacon
-GenericName=Battle for Middle-earth Launcher
-Comment=Play The Battle for Middle-earth, BFME II and The Rise of the Witch-king on Linux
+GenericName=Lord of the Rings Games Launcher
+Comment=Play the Battle for Middle-earth games, Age of the Ring and LOTR: Conquest on Linux
 Exec=beacon-app %U
 Icon=beacon
 Categories=Game;StrategyGame;
-Keywords=bfme;middle-earth;rotwk;wine;proton;
+Keywords=bfme;middle-earth;rotwk;aotr;conquest;lotr;wine;proton;
 Actions=fullscreen;
 
 [Desktop Action fullscreen]

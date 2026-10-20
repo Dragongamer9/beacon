@@ -18,10 +18,22 @@ pub enum GameId {
     Rotwk,
     /// Age of the Ring Standalone (fan remake).
     Aotr,
+    /// The Lord of the Rings: Conquest (Pandemic, 2009).
+    Conquest,
+}
+
+/// Which shelf section a game sits in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Family {
+    /// Battle for Middle-earth games (SAGE engine).
+    Bfme,
+    /// Other Lord of the Rings games.
+    Lotr,
 }
 
 impl GameId {
-    pub const ALL: [GameId; 4] = [GameId::Bfme1, GameId::Bfme2, GameId::Rotwk, GameId::Aotr];
+    pub const ALL: [GameId; 5] = [GameId::Bfme1, GameId::Bfme2, GameId::Rotwk, GameId::Aotr, GameId::Conquest];
 
     pub fn slug(self) -> &'static str {
         match self {
@@ -29,6 +41,7 @@ impl GameId {
             GameId::Bfme2 => "bfme2",
             GameId::Rotwk => "rotwk",
             GameId::Aotr => "aotr",
+            GameId::Conquest => "conquest",
         }
     }
 
@@ -38,6 +51,7 @@ impl GameId {
             "bfme2" | "2" | "lotrbfme2" => Some(GameId::Bfme2),
             "rotwk" | "witchking" | "bfme2ep1" | "ep1" | "lotrbfme2ep1" => Some(GameId::Rotwk),
             "aotr" | "ageofthering" | "age-of-the-ring" | "age of the ring" => Some(GameId::Aotr),
+            "conquest" | "lotrc" | "lotr-conquest" => Some(GameId::Conquest),
             _ => None,
         }
     }
@@ -48,6 +62,7 @@ impl GameId {
             GameId::Bfme2 => "The Battle for Middle-earth II",
             GameId::Rotwk => "The Rise of the Witch-king",
             GameId::Aotr => "Age of the Ring",
+            GameId::Conquest => "The Lord of the Rings: Conquest",
         }
     }
 
@@ -57,6 +72,7 @@ impl GameId {
             GameId::Bfme2 => "BFME II",
             GameId::Rotwk => "RotWK",
             GameId::Aotr => "AotR",
+            GameId::Conquest => "Conquest",
         }
     }
 
@@ -66,6 +82,7 @@ impl GameId {
             GameId::Bfme1 => "lotrbfme.exe",
             GameId::Bfme2 => "lotrbfme2.exe",
             GameId::Rotwk | GameId::Aotr => "lotrbfme2ep1.exe",
+            GameId::Conquest => "Conquest.exe",
         }
     }
 
@@ -76,6 +93,8 @@ impl GameId {
             GameId::Bfme1 => "The Battle for Middle-earth",
             GameId::Bfme2 => "The Battle for Middle-earth II",
             GameId::Rotwk | GameId::Aotr => "The Lord of the Rings, The Rise of the Witch-king",
+            // Not used: Conquest's own installer writes its registry.
+            GameId::Conquest => "The Lord of the Rings - Conquest",
         }
     }
 
@@ -86,7 +105,26 @@ impl GameId {
             GameId::Bfme2 => "My The Battle for Middle-earth II Files",
             GameId::Rotwk => "My The Lord of the Rings, The Rise of the Witch-king Files",
             GameId::Aotr => "Age of the Ring",
+            GameId::Conquest => "",
         }
+    }
+
+    pub fn family(self) -> Family {
+        match self {
+            GameId::Conquest => Family::Lotr,
+            _ => Family::Bfme,
+        }
+    }
+
+    /// BFME games: Beacon writes the EA registry keys, Options.ini
+    /// resolution, and supports `-win` / `-mod`.
+    pub fn is_sage(self) -> bool {
+        self.family() == Family::Bfme
+    }
+
+    /// Games whose registry carries the player's CD key (`ergc`).
+    pub fn wants_cd_key(self) -> bool {
+        matches!(self, GameId::Bfme1 | GameId::Bfme2 | GameId::Rotwk)
     }
 
     /// RotWK is an expansion and reads BFME II's install. AotR brings its own.
@@ -115,7 +153,16 @@ pub fn find_exe_in(dir: &Path, game: GameId) -> Option<PathBuf> {
 }
 
 fn game_for_file(name: &str) -> Option<GameId> {
-    [GameId::Bfme1, GameId::Bfme2, GameId::Rotwk].into_iter().find(|g| name.eq_ignore_ascii_case(g.exe()))
+    [GameId::Bfme1, GameId::Bfme2, GameId::Rotwk, GameId::Conquest].into_iter().find(|g| name.eq_ignore_ascii_case(g.exe()))
+}
+
+/// `Conquest.exe` is a generic name; only count it when a nearby folder
+/// says Conquest / LOTR.
+fn looks_like_lotr_conquest(dir: &Path) -> bool {
+    dir.ancestors().take(3).any(|a| {
+        let n = squash(&a.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
+        n.contains("conquest") || n.contains("lotr") || n.contains("lordoftherings")
+    })
 }
 
 fn squash(s: &str) -> String {
@@ -179,6 +226,9 @@ pub fn scan(roots: &[PathBuf], max_depth: usize) -> Vec<FoundGame> {
             }
             let Some(mut game) = game_for_file(&entry.file_name().to_string_lossy()) else { continue };
             let Some(dir) = entry.path().parent() else { continue };
+            if game == GameId::Conquest && !looks_like_lotr_conquest(dir) {
+                continue;
+            }
             // Inside an Age of the Ring install: its own exe is AotR, and the
             // base-game copies it bundles aren't separate installs.
             if aotr_root(dir).is_some() {
@@ -222,6 +272,9 @@ mod tests {
         assert_eq!(GameId::parse("bfme2"), Some(GameId::Bfme2));
         assert_eq!(GameId::parse("RotWK"), Some(GameId::Rotwk));
         assert_eq!(GameId::parse("AotR"), Some(GameId::Aotr));
+        assert_eq!(GameId::parse("conquest"), Some(GameId::Conquest));
+        assert_eq!(GameId::Conquest.family(), Family::Lotr);
+        assert!(GameId::Aotr.is_sage() && !GameId::Conquest.is_sage());
         assert_eq!(GameId::parse("bfme3"), None);
     }
 
@@ -268,5 +321,20 @@ mod tests {
         assert_eq!(aotr_root(&root.join("aotr")).unwrap(), root);
         assert_eq!(aotr_game_dir(&root).unwrap(), root.join("aotr"));
         assert!(aotr_root(&real).is_none());
+    }
+
+    #[test]
+    fn conquest_detection_needs_a_conquest_folder() {
+        let t = tempfile::tempdir().unwrap();
+        let real = t.path().join("Games/The Lord of the Rings - Conquest");
+        let other = t.path().join("Games/SomeStrategyGame/bin");
+        for d in [&real, &other] {
+            std::fs::create_dir_all(d).unwrap();
+            std::fs::write(d.join("Conquest.exe"), b"").unwrap();
+        }
+        // The dedicated-server tools aren't the game.
+        std::fs::write(real.join("ConquestServer.exe"), b"").unwrap();
+        let found = scan(&[t.path().join("Games")], 6);
+        assert_eq!(found, vec![FoundGame { game: GameId::Conquest, dir: real }]);
     }
 }
