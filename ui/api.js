@@ -27,7 +27,7 @@ function mockApi() {
     ...extra,
   });
   const state = {
-    version: "0.0.1 (preview)",
+    version: "0.0.5 (preview)",
     games: [
       mk("bfme1", "The Battle for Middle-earth", "BFME", "/home/you/Games/BFME1"),
       mk("bfme2", "The Battle for Middle-earth II", "BFME II", "/home/you/Games/BFME2", { has_cd_key: false, issues: [{ level: "warn", message: "No CD key set. Add the key from your copy if the game asks you to reinstall." }] }),

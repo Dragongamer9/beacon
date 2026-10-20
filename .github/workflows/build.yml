@@ -1,6 +1,7 @@
 # Tests Beacon and builds its Linux packages: an AppImage, a .deb, an .rpm and a plain tar.gz. Each one has
-# Beacon's window (beacon-app) and its command-line tool (beacon). On a v* tag they go into a GitHub Release,
-# also under fixed names so releases/latest/download/<name> links keep working.
+# Beacon's window (beacon-app) and its command-line tool (beacon). A new version on main (the version in
+# tauri.conf.json that has no release yet) is released: the tag v<version> and a GitHub Release, also under fixed
+# names so releases/latest/download/<name> links keep working. A pushed v* tag works the same way.
 # Failures are reported as annotations with the last lines of output.
 name: Build
 
@@ -202,20 +203,30 @@ jobs:
           if-no-files-found: error
 
       - name: GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'push' && github.ref == 'refs/heads/main')
         env:
           GH_TOKEN: ${{ github.token }}
           V: ${{ steps.version.outputs.version }}
         run: |
           set -o pipefail
-          tag="$GITHUB_REF_NAME"
           log="$RUNNER_TEMP/release.log"
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            tag="$GITHUB_REF_NAME"
+          else
+            # A push to main: release only a version that has no release yet (a version bump is a release).
+            tag="v$V"
+            if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              echo "::notice title=No new release::Beacon $V is already released; bump the version in tauri.conf.json and Cargo.toml to release."
+              exit 0
+            fi
+          fi
           {
             if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
               gh release upload "$tag" dist/* --clobber --repo "$GITHUB_REPOSITORY"
             else
               # A full release, not a pre-release: releases/latest only points at full releases.
-              gh release create "$tag" dist/* --repo "$GITHUB_REPOSITORY" --verify-tag \
+              verify=""; [ "$GITHUB_REF_TYPE" = tag ] && verify="--verify-tag"
+              gh release create "$tag" dist/* --repo "$GITHUB_REPOSITORY" $verify --target "$GITHUB_SHA" \
                 --title "Beacon $V" --generate-notes
             fi
           } > "$log" 2>&1 || { echo "::error title=Release failed::$(tail -20 "$log" | tr '\n' '|' | cut -c1-3900)"; exit 1; }
