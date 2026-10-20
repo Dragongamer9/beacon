@@ -841,7 +841,8 @@ mod tests {
         let txt = t.games.join("notes.txt");
         fs::write(&txt, b"").unwrap();
         assert_eq!(exit_code(&go(&mut t, &["install-from", "bfme2", txt.to_str().unwrap()])), 2);
-        assert_eq!(exit_code(&go(&mut t, &["install-from", "bfme2", t.games.join("gone.iso").to_str().unwrap()])), 2);
+        let gone = t.games.join("gone.iso");
+        assert_eq!(exit_code(&go(&mut t, &["install-from", "bfme2", gone.to_str().unwrap()])), 2);
         let v = go(&mut t, &["aio"]).unwrap();
         assert_eq!(v["launcher_url"], "https://bfmeladder.com");
         assert!(v["games"].as_array().unwrap().is_empty());

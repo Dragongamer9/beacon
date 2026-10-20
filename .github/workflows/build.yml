@@ -255,8 +255,8 @@ jobs:
         run: |
           set -o pipefail
           log="$RUNNER_TEMP/tauri.log"
-          # tauri.windows.conf.json is merged in here: it puts beacon.exe next to beacon-app.exe in both installers.
-          if ! npx --yes @tauri-apps/cli@2 build --verbose --bundles nsis,msi 2>&1 | tee "$log"; then
+          # windows-bundle.conf.json (only here, not in cargo test: the CLI must be built first) puts beacon.exe next to beacon-app.exe in both installers.
+          if ! npx --yes @tauri-apps/cli@2 build --verbose --bundles nsis,msi --config windows-bundle.conf.json 2>&1 | tee "$log"; then
             echo "::error title=tauri build failed (Windows)::$( (grep -E -i -A6 '^(error|\s*error)|failed' "$log" | head -60; echo ===; tail -40 "$log") | tr '\n' '|' | cut -c1-3900)"
             exit 1
           fi
