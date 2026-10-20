@@ -382,7 +382,9 @@ impl Beacon {
             return Err(e).with_context(|| format!("putting the launcher at {} (close the launcher if it's open)", exe.display()));
         }
         let marker = Marker { path: exe.clone(), md5: md5.clone(), bytes };
-        std::fs::write(self.launcher_marker(), serde_json::to_string(&marker)?)?;
+        let marker_file = self.launcher_marker();
+        if let Some(parent) = marker_file.parent() { std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?; }
+        std::fs::write(&marker_file, serde_json::to_string(&marker)?)?;
         progress(Some(100), "The All-in-One launcher is installed");
         Ok(LauncherInstall { path: exe, prefix, bytes, md5, verified: expected.is_some() })
     }
