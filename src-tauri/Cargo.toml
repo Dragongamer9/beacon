@@ -1,0 +1,21 @@
+[package]
+name = "beacon-app"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Beacon – controller-first launcher for The Battle for Middle-earth on Linux"
+
+[[bin]]
+name = "beacon-app"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+beacon-core = { path = "../crates/beacon-core" }
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"

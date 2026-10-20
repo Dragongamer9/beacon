@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Beacon</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body data-accent="bfme1">
+  <div class="backdrop" aria-hidden="true">
+    <div class="glow"></div>
+    <svg class="ridge" viewBox="0 0 1600 300" preserveAspectRatio="none">
+      <path d="M0 300 L0 210 L120 170 L210 196 L330 120 L420 168 L520 92 L600 140 L700 110 L790 176 L900 84 L1010 150 L1120 118 L1230 180 L1340 132 L1460 190 L1600 150 L1600 300 Z"/>
+      <path class="near" d="M0 300 L0 250 L160 228 L300 252 L470 214 L640 246 L820 222 L1000 254 L1180 226 L1380 250 L1600 232 L1600 300 Z"/>
+    </svg>
+  </div>
+
+  <!-- Main layer -->
+  <div class="layer" id="main-layer">
+    <header class="topbar">
+      <div class="brand">
+        <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><use href="#flame"/></svg>
+        <span>Beacon</span>
+      </div>
+      <div class="topbar-actions">
+        <button class="nav ghost" id="btn-scan"><svg viewBox="0 0 24 24"><use href="#i-scan"/></svg>Find games</button>
+        <button class="nav ghost" id="btn-launcher-settings"><svg viewBox="0 0 24 24"><use href="#i-cog"/></svg>Launcher</button>
+        <span class="clock" id="clock"></span>
+      </div>
+    </header>
+
+    <main class="hero" id="hero">
+      <svg class="hero-emblem" viewBox="0 0 120 120" aria-hidden="true"><use id="hero-emblem" href="#emblem-bfme1"/></svg>
+      <p class="kicker" id="hero-kicker">The Lord of the Rings</p>
+      <h1 id="hero-title">The Battle for Middle-earth</h1>
+      <div class="chips" id="hero-chips"></div>
+      <p class="issue" id="hero-issue" hidden></p>
+      <div class="actions">
+        <button class="nav play" id="btn-play"><svg viewBox="0 0 24 24"><use href="#i-play"/></svg><span id="play-label">Play</span></button>
+        <button class="nav secondary" id="btn-mods"><svg viewBox="0 0 24 24"><use href="#i-scroll"/></svg><span id="mods-label">Vanilla</span></button>
+        <button class="nav secondary" id="btn-game-settings"><svg viewBox="0 0 24 24"><use href="#i-cog"/></svg>Game settings</button>
+      </div>
+    </main>
+
+    <section class="shelf" id="shelf" aria-label="Games"></section>
+
+    <footer class="hints" id="hints"></footer>
+  </div>
+
+  <!-- Sheets -->
+  <aside class="layer sheet" id="sheet-mods" hidden>
+    <header><p class="kicker" data-game-short></p><h2>Mods</h2></header>
+    <div class="rows" id="mods-rows"></div>
+    <div class="sheet-foot">
+      <button class="nav row-btn" id="btn-catalog"><svg viewBox="0 0 24 24"><use href="#i-scroll"/></svg>Browse known mods &amp; patches</button>
+      <button class="nav row-btn" id="btn-find-mods"><svg viewBox="0 0 24 24"><use href="#i-scan"/></svg>Find mods on this PC</button>
+      <button class="nav row-btn" id="btn-add-mod-file"><svg viewBox="0 0 24 24"><use href="#i-plus"/></svg>Add mod file (.big or launcher)</button>
+      <button class="nav row-btn" id="btn-add-mod-folder"><svg viewBox="0 0 24 24"><use href="#i-folder"/></svg>Add mod folder</button>
+      <button class="nav row-btn" id="btn-open-mods"><svg viewBox="0 0 24 24"><use href="#i-open"/></svg>Open mods folder</button>
+    </div>
+  </aside>
+
+  <aside class="layer sheet" id="sheet-catalog" hidden>
+    <header><p class="kicker" data-game-short></p><h2>Mod catalog</h2></header>
+    <div class="rows" id="catalog-rows"></div>
+    <div class="sheet-foot">
+      <button class="nav row-btn" id="btn-catalog-add"><svg viewBox="0 0 24 24"><use href="#i-plus"/></svg>Add a downloaded mod</button>
+      <button class="nav row-btn" id="btn-catalog-find"><svg viewBox="0 0 24 24"><use href="#i-scan"/></svg>Find mods on this PC</button>
+    </div>
+  </aside>
+
+  <aside class="layer sheet" id="sheet-game" hidden>
+    <header><p class="kicker">Game settings</p><h2 data-game-title></h2></header>
+    <div class="rows" id="game-rows"></div>
+  </aside>
+
+  <aside class="layer sheet" id="sheet-launcher" hidden>
+    <header><p class="kicker">Beacon</p><h2>Launcher settings</h2></header>
+    <div class="rows" id="launcher-rows"></div>
+  </aside>
+
+  <!-- Launch overlay -->
+  <div class="layer overlay" id="overlay" hidden>
+    <div class="overlay-card">
+      <svg class="overlay-flame" viewBox="0 0 32 32" aria-hidden="true"><use href="#flame"/></svg>
+      <h2 id="overlay-title">Lighting the beacon…</h2>
+      <p id="overlay-text"></p>
+      <button class="nav play" id="overlay-ok" hidden>OK</button>
+    </div>
+  </div>
+
+  <div class="toast" id="toast" role="status" hidden></div>
+
+  <!-- Symbols -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <defs>
+      <linearGradient id="flame-grad" x1="0" y1="1" x2="0" y2="0">
+        <stop offset="0" stop-color="#c8641c"/><stop offset=".55" stop-color="#e8a33d"/><stop offset="1" stop-color="#ffe2a0"/>
+      </linearGradient>
+    </defs>
+    <symbol id="flame" viewBox="0 0 32 32">
+      <path fill="url(#flame-grad)" d="M16 2c1.6 4.6 6.9 7.6 6.9 14.1A6.9 6.9 0 0 1 16 23a6.9 6.9 0 0 1-6.9-6.9c0-3.2 1.6-5.2 3.1-6.8.3 2 1.2 3.4 2.6 4.2C14 9.6 14.6 5.6 16 2z"/>
+      <path fill="currentColor" opacity=".9" d="M6 25h20l-2 2.5H8zM9 28.5h14l-1.2 1.5H10.2z"/>
+    </symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path fill="currentColor" d="M8 5.5v13a1 1 0 0 0 1.5.86l10.4-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z"/></symbol>
+    <symbol id="i-cog" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" d="M12 15.2a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4zM19.4 13.5l1.6 1.2-1.8 3.1-1.9-.7a7.4 7.4 0 0 1-2 1.2l-.3 2h-3.6l-.3-2a7.4 7.4 0 0 1-2-1.2l-1.9.7-1.8-3.1 1.6-1.2a7.6 7.6 0 0 1 0-2.4L3.4 9.7l1.8-3.1 1.9.7a7.4 7.4 0 0 1 2-1.2l.3-2h3.6l.3 2a7.4 7.4 0 0 1 2 1.2l1.9-.7 1.8 3.1-1.6 1.2a7.6 7.6 0 0 1 0 2.4z"/></symbol>
+    <symbol id="i-scroll" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M7 4h11a2 2 0 0 1 2 2v1h-4M7 4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2V7M7 4a2 2 0 0 1 2 2v12M11 9h4M11 13h4"/></symbol>
+    <symbol id="i-scan" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M10.5 17a6.5 6.5 0 1 0 0-13 6.5 6.5 0 0 0 0 13zM15.5 15.5 20 20"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M3.5 7a2 2 0 0 1 2-2h4l2 2.2h7a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/></symbol>
+    <symbol id="i-open" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M14 4h6v6M20 4l-8.5 8.5M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" d="m5 12.5 4.5 4.5L19 7.5"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M6 6l12 12M18 6 6 18"/></symbol>
+
+    <!-- Original emblems for the game tiles -->
+    <symbol id="emblem-bfme1" viewBox="0 0 120 120">
+      <path fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round" d="M10 104 44 54l14 16 18-30 34 64z"/>
+      <path fill="none" stroke="currentColor" stroke-width="2" opacity=".5" d="M38 104l20-26 10 10 10-14 20 30"/>
+      <path fill="currentColor" d="M76 40c-5-6-1-14 2-18 0 5 4 6 5 3 3 4 3 11-1 15z" opacity=".95"/>
+      <path fill="none" stroke="currentColor" stroke-width="2.5" d="M70 40h14"/>
+    </symbol>
+    <symbol id="emblem-bfme2" viewBox="0 0 120 120">
+      <path fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round" d="M14 80 40 36l14 18 14-26 38 52z"/>
+      <path fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" d="M10 92c8-5 16-5 24 0s16 5 24 0 16-5 24 0 16 5 24 0 8-4 4-2"/>
+      <path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity=".55" d="M18 104c7-4 14-4 21 0s14 4 21 0 14-4 21 0 14 4 21 0"/>
+    </symbol>
+    <symbol id="emblem-rotwk" viewBox="0 0 120 120">
+      <path fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round" d="M22 92 30 46l12 22 8-40 10 34 10-34 8 40 12-22 8 46z"/>
+      <path fill="none" stroke="currentColor" stroke-width="3" d="M20 100h80"/>
+      <path fill="currentColor" d="M60 74l5 8-5 8-5-8z"/>
+    </symbol>
+  </svg>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
