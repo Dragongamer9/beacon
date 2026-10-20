@@ -4,7 +4,7 @@ use beacon_core::{
     games::GameId,
     mods::ModEntry,
     runner::Runner,
-    Beacon, CatalogItem, GameStatus, Resolution,
+    Beacon, CatalogItem, Community, GameStatus, Resolution,
 };
 use serde::Serialize;
 use std::collections::BTreeSet;
@@ -137,6 +137,41 @@ fn set_launch_options(state: State<AppState>, game: GameId, virtual_desktop: Opt
 }
 
 #[tauri::command]
+fn get_community(state: State<AppState>, game: GameId) -> Community {
+    state.beacon.lock().unwrap().community(game)
+}
+
+#[tauri::command]
+fn set_edition(state: State<AppState>, game: GameId, id: Option<String>) -> CmdResult<Snapshot> {
+    mutate(&state, |b| b.set_edition(game, id.as_deref()))
+}
+
+/// Merge or add a community download for a setup step. Copying can take a
+/// while (Expanding Fronts is >1 GB), so it runs on a copy of the state off
+/// the main thread, then the step/edition result is folded back in.
+#[tauri::command]
+async fn add_files(app: AppHandle, game: GameId, step: String, path: String) -> CmdResult<(Snapshot, String)> {
+    let mut work = app.state::<AppState>().beacon.lock().unwrap().clone();
+    let (work, msg) = tauri::async_runtime::spawn_blocking(move || {
+        let r = work.add_files(game, &step, &PathBuf::from(path));
+        (work, r)
+    })
+    .await
+    .map_err(err)?;
+    let msg = msg.map_err(err)?;
+    let state = app.state::<AppState>();
+    {
+        let mut b = state.beacon.lock().unwrap();
+        let done = work.game(game);
+        let cfg = b.game_mut(game);
+        cfg.done_steps = done.done_steps;
+        cfg.edition = done.edition;
+        b.save().map_err(err)?;
+    }
+    Ok((snapshot(&state), msg))
+}
+
+#[tauri::command]
 fn list_mods(state: State<AppState>, game: GameId) -> Vec<ModEntry> {
     state.beacon.lock().unwrap().mods(game)
 }
@@ -202,7 +237,7 @@ fn emit(app: &AppHandle, game: GameId, phase: &'static str, message: Option<Stri
 
 /// Start a game (or `installer`, an exe to run inside the game's prefix).
 /// Progress arrives as `game-event`s; the call itself returns at once.
-fn start(app: AppHandle, state: &AppState, game: GameId, mod_id: Option<String>, installer: Option<PathBuf>) -> CmdResult<()> {
+fn start(app: AppHandle, state: &AppState, game: GameId, mod_id: Option<String>, installer: Option<PathBuf>, step: Option<String>) -> CmdResult<()> {
     let beacon = state.beacon.lock().unwrap().clone();
     // Fail fast on anything we can check without running Wine.
     let cmd = match &installer {
@@ -239,6 +274,11 @@ fn start(app: AppHandle, state: &AppState, game: GameId, mod_id: Option<String>,
                     let state = app.state::<AppState>();
                     let mut b = state.beacon.lock().unwrap();
                     b.scan(&[]);
+                    if let (Some(step), Ok(s)) = (&step, &status) {
+                        if s.success() {
+                            b.mark_step(game, step);
+                        }
+                    }
                     let _ = b.save();
                 }
                 let msg = match status {
@@ -257,12 +297,12 @@ fn start(app: AppHandle, state: &AppState, game: GameId, mod_id: Option<String>,
 
 #[tauri::command]
 fn launch(app: AppHandle, state: State<AppState>, game: GameId, mod_id: Option<String>) -> CmdResult<()> {
-    start(app.clone(), &state, game, mod_id, None)
+    start(app.clone(), &state, game, mod_id, None, None)
 }
 
 #[tauri::command]
-fn run_installer(app: AppHandle, state: State<AppState>, game: GameId, path: String) -> CmdResult<()> {
-    start(app.clone(), &state, game, None, Some(PathBuf::from(path)))
+fn run_installer(app: AppHandle, state: State<AppState>, game: GameId, path: String, step: Option<String>) -> CmdResult<()> {
+    start(app.clone(), &state, game, None, Some(PathBuf::from(path)), step)
 }
 
 #[tauri::command]
@@ -281,6 +321,7 @@ async fn pick_file(app: AppHandle, kind: String) -> Option<String> {
     let mut d = app.dialog().file();
     d = match kind.as_str() {
         "mod" => d.add_filter("Mod (.big or launcher .exe)", &["big", "BIG", "exe", "EXE"]),
+        "download" => d.add_filter("Download (archive, .exe or .dll)", &["zip", "ZIP", "7z", "rar", "RAR", "tar", "gz", "xz", "exe", "EXE", "dll", "DLL"]),
         _ => d.add_filter("Windows program", &["exe", "EXE", "msi", "MSI"]),
     };
     d.blocking_pick_file().and_then(|p| p.into_path().ok()).map(|p| p.to_string_lossy().into_owned())
@@ -334,6 +375,9 @@ fn main() {
             set_runner,
             set_display,
             set_launch_options,
+            get_community,
+            set_edition,
+            add_files,
             list_mods,
             add_mod,
             get_catalog,

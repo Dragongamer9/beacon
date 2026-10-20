@@ -11,6 +11,7 @@
 
 pub mod catalog;
 pub mod config;
+pub mod editions;
 pub mod games;
 pub mod mods;
 pub mod options_ini;
@@ -61,6 +62,8 @@ pub struct GameStatus {
     /// Steam app id, when the game is installed in a Steam library.
     pub steam_appid: Option<u32>,
     pub via_steam: bool,
+    /// Active edition's name (Other Games).
+    pub edition: Option<String>,
     pub selected_mod: Option<String>,
     /// Extra exe the game ships (AotR's own launcher, for updates).
     pub tool_launcher: Option<PathBuf>,
@@ -75,6 +78,28 @@ pub struct CatalogItem {
     #[serde(flatten)]
     pub entry: catalog::CatalogEntry,
     pub installed: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct EditionStatus {
+    #[serde(flatten)]
+    pub edition: editions::Edition,
+    pub installed: bool,
+    pub active: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StepStatus {
+    #[serde(flatten)]
+    pub step: editions::Step,
+    pub done: bool,
+}
+
+/// A game's community-version setup: editions to pick from and steps.
+#[derive(Debug, Clone, Serialize)]
+pub struct Community {
+    pub editions: Vec<EditionStatus>,
+    pub steps: Vec<StepStatus>,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -199,6 +224,21 @@ impl Beacon {
                 message: "Games for Windows Live is gone: put the community xliveless xlive.dll in the game folder (campaign and skirmish only).".into(),
             });
         }
+        let active = self.active_edition(g);
+        if installed && !self.via_steam(g) {
+            let eds = editions::editions(g);
+            if eds.iter().any(|e| e.community) && !active.as_ref().map(|(e, _)| e.community).unwrap_or(false) {
+                let any_community = self.edition_list(g).iter().any(|e| e.installed && e.edition.community);
+                issues.push(Issue {
+                    level: Level::Warn,
+                    message: if any_community {
+                        "Playing the original version — the community version is installed; pick it under Game settings → Version.".into()
+                    } else {
+                        "Community version not set up yet — Game settings → Community version walks you through it.".into()
+                    },
+                });
+            }
+        }
         let selected_mod = self.config.selected_mod.get(&g).cloned().filter(|id| self.find_mod(g, id).is_some());
         GameStatus {
             id: g,
@@ -217,6 +257,7 @@ impl Beacon {
             virtual_desktop: self.virtual_desktop(g),
             steam_appid: self.steam_appid(g),
             via_steam: self.via_steam(g),
+            edition: active.map(|(e, _)| e.name.to_string()),
             selected_mod,
             tool_launcher: if g == GameId::Aotr { self.aotr_bundled().launcher } else { None },
             ready: !issues.iter().any(|i| i.level == Level::Error),
@@ -237,6 +278,127 @@ impl Beacon {
 
     pub fn virtual_desktop(&self, g: GameId) -> bool {
         !g.is_sage() && self.game(g).virtual_desktop.unwrap_or_else(|| g.default_virtual_desktop())
+    }
+
+    // ---- community versions -------------------------------------------
+
+    pub fn edition_list(&self, g: GameId) -> Vec<EditionStatus> {
+        let dir = self.game_dir(g);
+        let active = self.active_edition(g).map(|(e, _)| e.id);
+        editions::editions(g)
+            .into_iter()
+            .map(|edition| {
+                let installed = dir.as_deref().and_then(|d| editions::locate(&edition, d)).is_some();
+                let is_active = Some(edition.id) == active;
+                EditionStatus { edition, installed, active: is_active }
+            })
+            .collect()
+    }
+
+    /// The edition a launch uses: the chosen one if installed, else the
+    /// first installed community edition, else the first installed one.
+    pub fn active_edition(&self, g: GameId) -> Option<(editions::Edition, Option<PathBuf>)> {
+        let dir = self.game_dir(g)?;
+        let found: Vec<(editions::Edition, Option<PathBuf>)> =
+            editions::editions(g).into_iter().filter_map(|e| editions::locate(&e, &dir).map(|m| (e, m))).collect();
+        let chosen = self.game(g).edition;
+        let pick = chosen
+            .as_deref()
+            .and_then(|id| found.iter().position(|(e, _)| e.id == id))
+            .or_else(|| found.iter().position(|(e, _)| e.community))
+            .or(if found.is_empty() { None } else { Some(0) })?;
+        Some(found[pick].clone())
+    }
+
+    pub fn community(&self, g: GameId) -> Community {
+        let done = self.game(g).done_steps;
+        Community {
+            editions: self.edition_list(g),
+            steps: editions::steps(g).into_iter().map(|step| StepStatus { done: done.iter().any(|d| d == step.id), step }).collect(),
+        }
+    }
+
+    pub fn set_edition(&mut self, g: GameId, id: Option<&str>) -> Result<()> {
+        if let Some(id) = id {
+            let e = self.edition_list(g).into_iter().find(|e| e.edition.id == id).ok_or_else(|| anyhow!("{} has no edition {id}", g.short()))?;
+            if !e.installed {
+                bail!("{} isn't installed yet", e.edition.name);
+            }
+        }
+        self.game_mut(g).edition = id.map(str::to_string);
+        Ok(())
+    }
+
+    pub fn mark_step(&mut self, g: GameId, id: &str) {
+        let done = &mut self.game_mut(g).done_steps;
+        if !done.iter().any(|d| d == id) {
+            done.push(id.to_string());
+        }
+    }
+
+    /// Hand Beacon a community download for a step: an archive (extracted
+    /// with 7z/bsdtar/unzip), an extracted folder, or a single file. It's
+    /// merged into the game folder or added under Mods, with replaced files
+    /// backed up to `<data>/backups/<game>/<time>/`. Returns a summary.
+    pub fn add_files(&mut self, g: GameId, step_id: &str, source: &Path) -> Result<String> {
+        let step = editions::steps(g).into_iter().find(|s| s.id == step_id).ok_or_else(|| anyhow!("{} has no step {step_id}", g.short()))?;
+        let dir = self.game_dir(g).ok_or_else(|| anyhow!("set {}'s game folder first", g.short()))?;
+        if !source.exists() {
+            bail!("{} not found", source.display());
+        }
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        let backup = self.paths.data_dir.join("backups").join(g.slug()).join(stamp.to_string());
+        let tmp = self.paths.data_dir.join("tmp").join(format!("{}-{stamp}", g.slug()));
+        let is_archive = source.is_file()
+            && source
+                .extension()
+                .map(|e| ["zip", "7z", "rar", "tar", "gz", "tgz", "xz", "bz2"].iter().any(|x| e.eq_ignore_ascii_case(x)))
+                .unwrap_or(false);
+        let root = if is_archive {
+            editions::extract(source, &tmp)?;
+            editions::content_root(&tmp)
+        } else if source.is_dir() {
+            editions::content_root(source)
+        } else {
+            source.to_path_buf()
+        };
+
+        let result = (|| -> Result<String> {
+            match step.action {
+                editions::Action::Merge => {
+                    if root.is_file() {
+                        let name = root.file_name().unwrap();
+                        let target = dir.join(name);
+                        if target.is_file() {
+                            std::fs::create_dir_all(&backup)?;
+                            std::fs::copy(&target, backup.join(name))?;
+                        }
+                        std::fs::copy(&root, &target)?;
+                        return Ok(format!("Copied {} into the game folder", name.to_string_lossy()));
+                    }
+                    let n = editions::merge_dir(&editions::merge_source(&root, &dir), &dir, &backup)?;
+                    Ok(format!("Merged {n} files into the game folder"))
+                }
+                editions::Action::Mods => {
+                    if !root.is_dir() {
+                        bail!("pick the mod's archive or folder");
+                    }
+                    let mods = dir.join("Mods");
+                    let target = mods.join(step.mods_name);
+                    let n = editions::merge_dir(&root, &target, &backup)?;
+                    Ok(format!("Added {} under Mods ({n} files)", step.title))
+                }
+                _ => bail!("\"{}\" isn't installed from files", step.title),
+            }
+        })();
+        let _ = std::fs::remove_dir_all(&tmp);
+        let msg = result?;
+        self.mark_step(g, step.id);
+        // Adding a community edition makes it the one that launches.
+        if editions::editions(g).iter().any(|e| e.id == step.id) {
+            let _ = self.set_edition(g, Some(step.id));
+        }
+        Ok(msg)
     }
 
     pub fn statuses(&self) -> Vec<GameStatus> {
@@ -519,7 +681,15 @@ impl Beacon {
             args.extend(m.args.iter().cloned());
         }
         args.extend(split_args(&cfg.extra_args));
-        let exe = games::find_exe_in(&dir, g).unwrap();
+        let mut exe = games::find_exe_in(&dir, g).unwrap();
+        if let Some((edition, mod_dir)) = self.active_edition(g) {
+            if let Some(x) = edition.exes.iter().find_map(|x| games::find_exe_in_named(&dir, x)) {
+                exe = x;
+            }
+            if let Some(m) = mod_dir {
+                args.insert(0, editions::modpath_arg(&dir, &m));
+            }
+        }
         if self.virtual_desktop(g) {
             let size = cfg.resolution.unwrap_or(Resolution { width: 1280, height: 1024 });
             let mut wrapped = vec![format!("/desktop=Beacon,{size}"), registry::wine_path(&exe, false)];
@@ -799,13 +969,64 @@ mod tests {
         assert!(st.ready && st.issues.iter().any(|i| i.message.contains("xlive.dll")));
         assert_eq!(st.steam_appid, None, "not in a Steam library");
         fs::write(uaw.join("xlive.dll"), b"").unwrap();
-        assert!(e.beacon.status(GameId::Uaw).issues.is_empty());
+        assert!(!e.beacon.status(GameId::Uaw).issues.iter().any(|i| i.message.contains("xlive.dll")));
         let reg = e.beacon.paths.prefix_root(GameId::Uaw).join("pfx/user.reg");
         fs::create_dir_all(reg.parent().unwrap()).unwrap();
         fs::write(&reg, "[Software\\\\Petroglyph]\n\"DX10Enabled\"=dword:00000001\n").unwrap();
         assert!(e.beacon.apply_options(GameId::Uaw).unwrap().is_some());
         assert!(fs::read_to_string(&reg).unwrap().contains("\"DX10Enabled\"=dword:00000000"));
         assert!(e.beacon.apply_options(GameId::Uaw).unwrap().is_none(), "already fixed");
+    }
+
+    #[test]
+    fn community_versions() {
+        let mut e = env();
+        let game = e.games.join("steamapps/common/Star Wars Galactic Battlegrounds Saga/Game");
+        let uaw = e.games.join("Universe at War Earth Assault");
+        fs::create_dir_all(&game).unwrap();
+        fs::write(game.join("battlegrounds_x1.exe"), b"").unwrap();
+        fs::create_dir_all(&uaw).unwrap();
+        fs::write(uaw.join("UAWEA.exe"), b"").unwrap();
+        fs::write(uaw.join("xlive.dll"), b"").unwrap();
+        e.beacon.scan(&[]);
+
+        // SWGB starts on Clone Campaigns and nags about the community version.
+        let st = e.beacon.status(GameId::Swgb);
+        assert_eq!(st.edition.as_deref(), Some("Clone Campaigns"));
+        assert!(st.issues.iter().any(|i| i.message.contains("Community version not set up")));
+
+        // Add Expanding Fronts from an extracted download.
+        let dl = e.games.join("Downloads/Expanding Fronts 1.5.5");
+        fs::create_dir_all(dl.join("GAME/DATA")).unwrap();
+        fs::write(dl.join("GAME/battlegrounds_x2.exe"), b"").unwrap();
+        fs::write(dl.join("GAME/DATA/x.dat"), b"").unwrap();
+        let msg = e.beacon.add_files(GameId::Swgb, "expanding-fronts", &dl).unwrap();
+        assert!(msg.contains("Merged 2 files"), "{msg}");
+        let st = e.beacon.status(GameId::Swgb);
+        assert_eq!(st.edition.as_deref(), Some("Expanding Fronts"));
+        assert!(st.issues.is_empty(), "{:?}", st.issues);
+        let c = e.beacon.launch_command(GameId::Swgb, None).unwrap();
+        assert!(c.args.iter().any(|a| a.ends_with("\\battlegrounds_x2.exe")), "{c:?}");
+        assert!(e.beacon.community(GameId::Swgb).steps[0].done);
+        // Can switch back to vanilla Clone Campaigns.
+        e.beacon.set_edition(GameId::Swgb, Some("clone-campaigns")).unwrap();
+        assert!(e.beacon.status(GameId::Swgb).issues.iter().any(|i| i.message.contains("Playing the original")));
+        assert!(e.beacon.set_edition(GameId::Swgb, Some("original")).is_err(), "not installed");
+
+        // UaW: Community Patch from a folder lands under Mods and loads via MODPATH.
+        let cp = e.games.join("Downloads/Community_Patch_2.0");
+        fs::create_dir_all(cp.join("Data/XML")).unwrap();
+        fs::write(cp.join("Data/XML/units.xml"), b"").unwrap();
+        e.beacon.add_files(GameId::Uaw, "community-patch", &cp).unwrap();
+        assert!(uaw.join("Mods/CommunityPatch/Data/XML/units.xml").is_file());
+        let c = e.beacon.launch_command(GameId::Uaw, None).unwrap();
+        assert_eq!(c.args[1], "MODPATH=Mods\\CommunityPatch", "{c:?}");
+        // A single file (xlive.dll) is copied in, with a backup of the old one.
+        let x = e.games.join("Downloads/xlive.dll");
+        fs::write(&x, b"new").unwrap();
+        e.beacon.add_files(GameId::Uaw, "xliveless", &x).unwrap();
+        assert_eq!(fs::read(uaw.join("xlive.dll")).unwrap(), b"new");
+        assert!(e.beacon.add_files(GameId::Uaw, "patch3", &x).is_err(), "installers run, not merge");
     }
 
     #[test]

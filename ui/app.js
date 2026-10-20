@@ -76,6 +76,11 @@ const KICKERS = {
   swgb: "LucasArts · 2001",
 };
 const STORE = { swgb: "https://store.steampowered.com/app/356500/" };
+const communityCache = {};
+async function loadCommunity(id) {
+  communityCache[id] = await api.call("get_community", { game: id });
+  return communityCache[id];
+}
 const isSage = (g) => g.family === "bfme";
 
 function buildShelf() {
@@ -131,6 +136,7 @@ function renderHero() {
   else if (g.ready) chips.push(`<span class="chip ok"><span class="dot"></span>Ready</span>`);
   else chips.push(`<span class="chip bad"><span class="dot"></span>${g.installed ? "Needs attention" : "Not found"}</span>`);
   if (g.runner) chips.push(`<span class="chip">${esc(g.runner.name)}</span>`);
+  if (g.edition) chips.push(`<span class="chip">${esc(g.edition)}</span>`);
   if (isSage(g)) chips.push(`<span class="chip">${g.resolution ? resText(g.resolution) : "Game's resolution"}${g.windowed ? " · windowed" : ""}</span>`);
   $("#hero-chips").innerHTML = chips.join("");
 
@@ -176,7 +182,7 @@ function render() {
 
 async function play() {
   const g = game();
-  if (!g.installed) return g.id === "aotr" || !isSage(g) ? open("game", $("#sheet-game")) : locate(g);
+  if (!g.installed) return g.id === "aotr" || !isSage(g) ? openGameSheet() : locate(g);
   if (!g.ready || isRunning(g.id)) return;
   try {
     await api.call("launch", { game: g.id, modId: null });
@@ -341,8 +347,32 @@ function renderGameSheet() {
   const rows = $("#game-rows");
   const aotr = g.id === "aotr";
   const sage = isSage(g);
+  const comm = communityCache[g.id] || { editions: [], steps: [] };
+  const installedEds = comm.editions.filter((e) => e.installed);
+  const activeEd = comm.editions.find((e) => e.active);
+  const stepVerb = { installer: "Run", merge: "Add", mods: "Add", link: "Open" };
+  const communityRows =
+    g.installed && (comm.editions.length || comm.steps.length)
+      ? [
+          `<p class="section-label">Community version</p>`,
+          ...(comm.editions.length
+            ? [rowHTML({ key: "edition", label: "Version", sub: activeEd?.blurb || "", value: activeEd ? activeEd.name + (activeEd.community ? " · community" : "") : "—", cycle: installedEds.length > 1 })]
+            : []),
+          ...comm.steps.map((st, i) => {
+            const row = rowHTML({ key: `step:${st.id}`, label: st.title, sub: st.detail, value: stepVerb[st.action] })
+              .replace('class="nav row', `class="nav row step${st.done ? " done" : ""}`)
+              .replace('<span class="label">', `<span class="label"><span class="num">${st.done ? "✓" : i + 1}</span>`);
+            const extras = [
+              ...(st.action === "merge" || st.action === "mods" ? [`<button class="nav side" data-key="folder:${st.id}">Folder</button>`] : []),
+              ...(st.url && st.action !== "link" ? [`<button class="nav side" data-key="page:${st.id}">Page</button>`] : []),
+            ];
+            return extras.length ? `<div class="mod-line">${row}${extras.join("")}</div>` : row;
+          }),
+        ]
+      : [];
   const conquest = g.id === "conquest";
   rows.innerHTML = [
+    ...communityRows,
     `<p class="section-label">Install</p>`,
     ...(aotr && !g.installed
       ? [
@@ -415,6 +445,28 @@ function renderGameSheet() {
   on("aotr-get", "click", () => act(() => api.call("open_url", { url: AOTR_URL }), "Opened ModDB in your browser"));
   on("aotr-install", "click", () => runInstaller(g));
   on("install", "click", () => runInstaller(g));
+  on("edition", "cycle", (e) => {
+    if (installedEds.length < 2) return;
+    const i = Math.max(0, installedEds.findIndex((x) => x.active));
+    const next = installedEds[(i + e.detail + installedEds.length) % installedEds.length];
+    act(() => api.call("set_edition", { game: g.id, id: next.id })).then(() => loadCommunity(g.id)).then(render);
+  });
+  on("edition", "click", (e) => e.currentTarget.dispatchEvent(new CustomEvent("cycle", { detail: 1 })));
+  for (const st of comm.steps) {
+    const page = () => act(() => api.call("open_url", { url: st.url }), `Opened ${st.title} in your browser`);
+    on(`page:${st.id}`, "click", page);
+    on(`folder:${st.id}`, "click", async () => {
+      const path = await api.call("pick_folder");
+      if (path) addCommunityFiles(g, st, path);
+    });
+    on(`step:${st.id}`, "click", async () => {
+      if (st.action === "link") return page();
+      const path = await api.call("pick_file", { kind: st.action === "installer" ? "exe" : "download" });
+      if (!path) return;
+      if (st.action === "installer") return runInstaller(g, path, st.id);
+      addCommunityFiles(g, st, path);
+    });
+  }
   on("store", "click", () => act(() => api.call("open_url", { url: STORE[g.id] }), "Opened the store page"));
   on("vdesk", "click", () => act(() => api.call("set_launch_options", { game: g.id, virtualDesktop: !g.virtual_desktop, viaSteam: null })));
   on("steam", "click", () => act(() => api.call("set_launch_options", { game: g.id, virtualDesktop: null, viaSteam: !g.via_steam })));
@@ -435,11 +487,25 @@ function renderGameSheet() {
   nav.refocus(keep ? `[data-key="${CSS.escape(keep)}"]` : null);
 }
 
-async function runInstaller(g, path) {
+async function runInstaller(g, path, step = null) {
   path ||= await api.call("pick_file", { kind: "exe" });
   if (!path) return;
   installing = g.id;
-  if (!(await act(() => api.call("run_installer", { game: g.id, path })))) installing = null;
+  if (!(await act(() => api.call("run_installer", { game: g.id, path, step })))) installing = null;
+}
+
+async function addCommunityFiles(g, st, path) {
+  showOverlay({ title: `Adding ${st.title}…`, text: "Extracting and copying files. Anything replaced is backed up first." });
+  try {
+    const [next, msg] = await api.call("add_files", { game: g.id, step: st.id, path });
+    snap = next;
+    await loadCommunity(g.id);
+    hideOverlay();
+    render();
+    toast(msg);
+  } catch (e) {
+    showOverlay({ title: `Couldn't add ${st.title}`, text: String(e?.message ?? e), error: true, ok: true });
+  }
 }
 
 function saveDisplay(change) {
@@ -537,6 +603,7 @@ async function onGameEvent({ game: id, phase, message }) {
     const wasInstalled = g?.installed;
     snap = await api.call("get_state");
     await loadMods(id, true).catch(() => {});
+    await loadCommunity(id).catch(() => {});
     if (inst && !wasInstalled && snap.games.find((x) => x.id === id)?.installed) toast(`${short} is installed and ready`);
     if (phase === "error" || message) showOverlay({ title: phase === "error" ? `${short} couldn't start` : `${short} closed`, text: message || "", error: true, ok: true });
     else hideOverlay();
@@ -563,7 +630,7 @@ nav.onShortcut((b) => {
     if (nav.current()?.classList.contains("tile")) nav.focus(tile);
   } else if (b === "x") {
     if (openSheet === "game") closeSheet();
-    else if (!openSheet) open("game", $("#sheet-game"));
+    else if (!openSheet) openGameSheet();
   } else if (b === "y") {
     if (openSheet === "mods") closeSheet();
     else if (!openSheet) loadMods(game().id).then(() => open("mods", $("#sheet-mods")));
@@ -578,7 +645,8 @@ nav.onInputChange(renderHints);
 
 $("#btn-play").addEventListener("click", play);
 $("#btn-mods").addEventListener("click", () => loadMods(game().id).then(() => open("mods", $("#sheet-mods"))));
-$("#btn-game-settings").addEventListener("click", () => open("game", $("#sheet-game")));
+const openGameSheet = () => loadCommunity(game().id).catch(() => {}).then(() => open("game", $("#sheet-game")));
+$("#btn-game-settings").addEventListener("click", openGameSheet);
 $("#btn-launcher-settings").addEventListener("click", () => open("launcher", $("#sheet-launcher")));
 $("#btn-scan").addEventListener("click", scan);
 $("#btn-add-mod-file").addEventListener("click", () => addMod("file"));

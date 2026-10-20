@@ -37,7 +37,7 @@ function mockApi() {
       mk("uaw", "Universe at War: Earth Assault", "UaW", "/home/you/Games/Universe at War Earth Assault", { family: "other", resolution: null, issues: [{ level: "warn", message: "Games for Windows Live is gone: put the community xliveless xlive.dll in the game folder (campaign and skirmish only)." }] }),
       mk("exigo", "Armies of Exigo", "Exigo", null, { family: "other", resolution: null }),
       mk("rol", "Rise of Nations: Rise of Legends", "RoL", "/home/you/Games/Rise of Legends", { family: "other", resolution: null }),
-      mk("swgb", "Star Wars: Galactic Battlegrounds Saga", "SWGB", "/home/you/.local/share/Steam/steamapps/common/Star Wars Galactic Battlegrounds Saga/Game", { family: "other", resolution: null, virtual_desktop: true, steam_appid: 356500 }),
+      mk("swgb", "Star Wars: Galactic Battlegrounds Saga", "SWGB", "/home/you/.local/share/Steam/steamapps/common/Star Wars Galactic Battlegrounds Saga/Game", { family: "other", resolution: null, virtual_desktop: true, steam_appid: 356500, edition: "Clone Campaigns", issues: [{ level: "warn", message: "Community version not set up yet — Game settings → Community version walks you through it." }] }),
     ],
     runners, default_runner: null, best_runner: runners[0].id,
     mods_dir: "/home/you/.local/share/beacon/mods", data_dir: "/home/you/.local/share/beacon", running: [],
@@ -53,6 +53,20 @@ function mockApi() {
     ],
   };
   const game = (id) => state.games.find((g) => g.id === id);
+  const ed = (id, name, blurb, community, installed, active) => ({ id, name, blurb, community, installed, active });
+  const step = (id, title, detail, action, url = "https://example.org") => ({ id, title, detail, action, url, done: false });
+  const community = {
+    swgb: {
+      editions: [ed("expanding-fronts", "Expanding Fronts", "The community expansion.", true, false, false), ed("clone-campaigns", "Clone Campaigns", "The Saga edition's expansion, unmodded.", false, true, true), ed("original", "Original game", "The base game.", false, false, false)],
+      steps: [step("expanding-fronts", "Expanding Fronts", "Download the FULL Expanding Fronts zip from ModDB (1.5.5, about 1.15 GB), then pick it here. Beacon merges its Game files into your install and backs up anything it replaces.", "merge")],
+    },
+    uaw: {
+      editions: [ed("community-patch", "Community Patch", "Fan-voted balance and bug-fix patch.", true, false, false), ed("human-resistance", "Human Resistance Reborn", "Adds a Human faction.", true, false, false), ed("vanilla", "Patch 3 (vanilla)", "The last official version.", false, true, true)],
+      steps: [step("patch3", "Official Patch 3", "Steam copies already have it.", "installer"), step("community-patch", "Community Patch", "Pick the archive; added under Mods.", "mods"), step("human-resistance", "Human Resistance Reborn (optional)", "Added under Mods.", "mods"), step("xliveless", "xliveless", "Put xlive.dll in the game folder.", "merge")],
+    },
+    exigo: { editions: [], steps: [step("patch14", "Patch 1.4", "The version the community plays.", "installer"), step("intel-fix", "Integrated graphics fix", "Only for the minimum-requirements error.", "merge"), step("forum", "Armies of Exigo community", "Forum with downloads and guides.", "link")] },
+    rol: { editions: [], steps: [step("patch", "Latest official patch", "From Rise of Legends Heaven.", "installer"), step("crash-fix", "Long-game crash fix", "Community fix for long sessions.", "merge"), step("user-patch", "User Patch Project", "Community patch in progress.", "link")] },
+  };
   const snap = () => structuredClone(state);
   const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -65,6 +79,20 @@ function mockApi() {
       if (g) Object.assign(game(g), { runner_choice: runner, runner: runners.find((r) => r.id === runner) || runners[0] });
       else state.default_runner = runner;
       return snap();
+    },
+    get_community: ({ game: g }) => structuredClone(community[g] || { editions: [], steps: [] }),
+    set_edition: ({ game: g, id }) => {
+      community[g].editions.forEach((e) => (e.active = e.id === id));
+      game(g).edition = community[g].editions.find((e) => e.active)?.name;
+      return snap();
+    },
+    add_files: async ({ game: g, step }) => {
+      await delay(1200);
+      const c = community[g];
+      c.steps.find((s) => s.id === step).done = true;
+      const ed = c.editions.find((e) => e.id === step);
+      if (ed) { ed.installed = true; c.editions.forEach((e) => (e.active = e === ed)); Object.assign(game(g), { edition: ed.name, issues: [] }); }
+      return [snap(), "Merged 1,204 files into the game folder"];
     },
     set_launch_options: ({ game: g, virtualDesktop, viaSteam }) => {
       if (virtualDesktop !== null) game(g).virtual_desktop = virtualDesktop;
