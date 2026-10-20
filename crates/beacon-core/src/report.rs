@@ -117,13 +117,21 @@ pub fn workshop(g: GameId, page: u32, items: &[crate::workshop::Item], hidden: u
     })
 }
 
-/// `aio`: `{launcher_url, games: [{game, dir, active_patch, active_mod}], appdata: [...]}`.
+/// `aio`: `{launcher_url, games: [{game, dir, active_patch, active_mod}], appdata: [...], launcher}`
+/// (`launcher` since 0.0.7: as [`launcher`]).
 pub fn aio(b: &Beacon) -> Value {
     json!({
         "launcher_url": crate::aio::LAUNCHER_URL,
         "games": value(&b.aio_games()),
         "appdata": b.aio_appdatas().iter().map(|p| path(p)).collect::<Vec<_>>(),
+        "launcher": launcher(b),
     })
+}
+
+/// `aio-launcher status`: `{installed, path, prefix, version, by_beacon, can_install, runner,
+/// download_url, site, log}` (since 0.0.7).
+pub fn launcher(b: &Beacon) -> Value {
+    value(&b.launcher_status())
 }
 
 /// The end of a text file: at most `max_bytes`, starting at a whole line.
@@ -350,9 +358,16 @@ mod tests {
         assert_eq!(keys(&v), ["game", "hidden", "items", "page", "source"]);
         assert_eq!((v["items"][0]["kind"].as_str(), v["hidden"].as_u64()), (Some("mod"), Some(3)));
         let a = aio(&b);
-        assert_eq!(keys(&a), ["appdata", "games", "launcher_url"]);
+        assert_eq!(keys(&a), ["appdata", "games", "launcher", "launcher_url"]);
         assert_eq!(a["launcher_url"], "https://bfmeladder.com");
         assert_eq!(a["games"], json!([]));
+        assert_eq!(
+            keys(&a["launcher"]),
+            ["by_beacon", "can_install", "download_url", "installed", "log", "path", "prefix", "runner", "site", "version"]
+        );
+        assert_eq!((a["launcher"]["installed"].as_bool(), a["launcher"]["path"].is_null()), (Some(false), true));
+        assert!(a["launcher"]["download_url"].as_str().unwrap().starts_with("https://"));
+        assert_eq!(launcher(&b), a["launcher"]);
         // store_url is in every GameStatus.
         let s = status(&b);
         assert_eq!(s[8]["id"], "swgb");

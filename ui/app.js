@@ -483,6 +483,8 @@ function renderGameSheet() {
       : []),
     ...(!aotr && !g.installed
       ? [
+          // Easiest for the BFME games: the BFME Foundation's launcher downloads them, Beacon finds them.
+          ...(WORKSHOP_GAMES.includes(g.id) ? aioRows() : []),
           ...(g.store_url ? [rowHTML({ key: "store", label: "Get it on Steam", sub: "Still sold — opens the store page", value: "Open" })] : []),
           `<div class="mod-line">${rowHTML({
             key: "own-copy",
@@ -490,18 +492,6 @@ function renderGameSheet() {
             sub: snap.native ? "Your disc's installer, a disc image (.iso) or setup files" : `Your disc's installer, a disc image (.iso) or setup files — it installs into ${g.short}'s own Wine prefix`,
             value: "Choose",
           })}<button class="nav side" data-key="own-copy-folder">Disc folder</button></div>`,
-          ...(WORKSHOP_GAMES.includes(g.id)
-            ? [
-                rowHTML({
-                  key: "aio",
-                  label: "Get the BFME All-in-One launcher",
-                  sub: snap.native
-                    ? "The BFME Foundation's launcher installs the games — Beacon finds them afterwards"
-                    : "A Windows program from the BFME Foundation — Beacon finds games it installed, also inside Wine prefixes",
-                  value: "Open",
-                }),
-              ]
-            : []),
         ]
       : []),
     rowHTML({ key: "folder", label: !g.installed ? "Already installed? Locate it" : "Game folder", sub: g.path || (aotr ? "The Age of the Ring folder, e.g. …/drive_c/AgeoftheRing" : "Not set"), value: "Change" }),
@@ -536,6 +526,9 @@ function renderGameSheet() {
     sage && rowHTML({ key: "windowed", label: "Windowed", sub: "Adds -win", extra: `<span class="toggle${g.windowed ? " on" : ""}"></span>` }),
     fieldHTML({ key: "args", label: "Extra arguments", placeholder: sage ? "-noshellmap" : "Optional", value: g.extra_args }),
     `<p class="section-label">Tools</p>`,
+    ...(g.installed && WORKSHOP_GAMES.includes(g.id) && snap.aio_launcher?.installed
+      ? [`<button class="nav row-btn" data-key="aio-open"><svg viewBox="0 0 24 24"><use href="#i-open"/></svg>Open the All-in-One launcher (patches, workshop, online)</button>`]
+      : []),
     ...(aotr && g.tool_launcher
       ? [`<button class="nav row-btn" data-key="aotr-launcher"><svg viewBox="0 0 24 24"><use href="#i-open"/></svg>Open the AotR Launcher for updates (may not work under Wine)</button>`]
       : []),
@@ -565,7 +558,7 @@ function renderGameSheet() {
   on("aotr-install", "click", () => runInstaller(g));
   on("own-copy", "click", () => installFromCopy(g, false));
   on("own-copy-folder", "click", () => installFromCopy(g, true));
-  on("aio", "click", () => act(() => api.call("open_url", { url: snap.aio_url }), "Opened bfmeladder.com in your browser"));
+  wireAio(on);
   on("edition", "cycle", (e) => {
     if (installedEds.length < 2) return;
     const i = Math.max(0, installedEds.findIndex((x) => x.active));
@@ -643,6 +636,86 @@ function saveDisplay(change) {
   return act(() => api.call("set_display", { game: g.id, ...next }));
 }
 
+// The BFME All-in-One launcher: Beacon installs it from the BFME Foundation's official download and opens it.
+// The games are downloaded inside the launcher (never by Beacon); Beacon then finds them.
+let aioInstalling = false;
+let aioOpenedAt = 0;
+
+function aioRows() {
+  const l = snap.aio_launcher || { installed: false, can_install: true };
+  const rows = [];
+  if (l.installed) {
+    rows.push(rowHTML({ key: "aio-open", label: "Open the All-in-One launcher", sub: snap.native ? l.path : `Runs in its own Wine prefix · ${l.path}`, value: "Open" }));
+  } else {
+    rows.push(
+      rowHTML({
+        key: "aio-install",
+        label: "Get the All-in-One launcher",
+        sub: !l.can_install
+          ? "It's a Windows program: install GE-Proton, umu-launcher or Wine first"
+          : snap.native
+            ? "Beacon downloads the BFME Foundation's launcher from bfmeladder.com and installs it"
+            : "Beacon downloads the BFME Foundation's launcher from bfmeladder.com and installs it in its own Wine prefix",
+        value: "Install",
+      })
+    );
+  }
+  rows.push(
+    `<div class="mod-line">${rowHTML({ key: "aio-scan", label: "Games are downloaded in the All-in-One launcher", sub: "Beacon picks them up automatically — or look now", value: "Find games" })}<button class="nav side" data-key="aio-site">bfmeladder.com</button></div>`
+  );
+  return rows;
+}
+
+function wireAio(on) {
+  on("aio-install", "click", installAioLauncher);
+  on("aio-open", "click", openAioLauncher);
+  on("aio-scan", "click", scan);
+  on("aio-site", "click", () => act(() => api.call("open_url", { url: snap.aio_url }), "Opened bfmeladder.com in your browser"));
+}
+
+async function installAioLauncher() {
+  if (aioInstalling) return;
+  if (snap.aio_launcher && !snap.aio_launcher.can_install) return toast("The All-in-One launcher is a Windows program: install GE-Proton, umu-launcher or Wine first", true);
+  aioInstalling = true;
+  showOverlay({
+    title: "Getting the All-in-One launcher…",
+    text: snap.native
+      ? "Downloading the BFME Foundation's launcher from bfmeladder.com."
+      : "Setting up its Wine prefix and downloading the BFME Foundation's launcher from bfmeladder.com. The first time can take a few minutes.",
+  });
+  try {
+    const [next, msg] = await api.call("aio_launcher_install");
+    snap = next;
+    if (openSheet === "launcher") aioCache = await api.call("aio_info").catch(() => aioCache);
+    hideOverlay();
+    render();
+    toast(`${msg} — open it to download the games`);
+  } catch (e) {
+    showOverlay({ title: "Couldn't get the All-in-One launcher", text: String(e?.message ?? e), error: true, ok: true });
+  }
+  aioInstalling = false;
+}
+
+function onAioProgress({ pct, text }) {
+  if (!aioInstalling || $("#overlay").hidden) return;
+  $("#overlay-text").textContent = pct == null ? text : `${text} (${pct}%)`;
+}
+
+async function openAioLauncher() {
+  if (await act(() => api.call("aio_launcher_open"), "Started the All-in-One launcher — download the games there; Beacon picks them up")) aioOpenedAt = Date.now();
+}
+
+// After the launcher: look for the games it downloaded (cheap; get_state picks them up).
+async function refreshAfterAio(announce) {
+  const before = snap.games.filter((g) => g.installed).length;
+  snap = await api.call("get_state");
+  if (openSheet === "launcher") aioCache = await api.call("aio_info").catch(() => aioCache);
+  render();
+  const after = snap.games.filter((g) => g.installed).length;
+  if (after > before) toast(`Found ${after - before} new game${after - before > 1 ? "s" : ""} from the All-in-One launcher`);
+  else if (announce) toast("The All-in-One launcher closed");
+}
+
 // Launcher settings
 function renderLauncherSheet() {
   const keep = nav.current()?.dataset.key;
@@ -668,7 +741,7 @@ function renderLauncherSheet() {
       const gg = snap.games.find((x) => x.id === a.game);
       return `<div class="row" style="cursor:default"><span style="min-width:0"><span class="label">${esc(gg?.short ?? a.game)}${a.active_patch ? ` · ${esc(a.active_patch)}` : ""}</span><span class="sub">${esc(a.dir)}</span></span><span class="badge">Found</span></div>`;
     }),
-    `<button class="nav row-btn" data-key="aio"><svg viewBox="0 0 24 24"><use href="#i-open"/></svg>${aio.length ? "Open bfmeladder.com" : "Get the All-in-One launcher (bfmeladder.com) — Beacon finds the games it installs"}</button>`,
+    ...aioRows(),
     `<p class="section-label">Storage</p>`,
     `<button class="nav row-btn" data-key="data"><svg viewBox="0 0 24 24"><use href="#i-folder"/></svg>Open Beacon's data folder (prefixes, mods, logs)</button>`,
     `<p class="section-label">About</p>`,
@@ -683,7 +756,7 @@ function renderLauncherSheet() {
   });
   on("defrunner", "click", (e) => e.currentTarget.dispatchEvent(new CustomEvent("cycle", { detail: 1 })));
   on("data", "click", () => act(() => api.call("open_path", { path: snap.data_dir })));
-  on("aio", "click", () => act(() => api.call("open_url", { url: snap.aio_url }), "Opened bfmeladder.com in your browser"));
+  wireAio(on);
   nav.refocus(keep ? `[data-key="${CSS.escape(keep)}"]` : null);
 }
 
@@ -810,6 +883,13 @@ $("#btn-catalog-add").addEventListener("click", () => addMod("file"));
 $("#btn-catalog-find").addEventListener("click", findMods);
 $("#btn-open-mods").addEventListener("click", () => act(() => api.call("open_path", { path: `${snap.mods_dir}/${game().id}` })));
 $("#overlay-ok").addEventListener("click", hideOverlay);
+// Coming back to Beacon while the All-in-One launcher is open: pick up games it finished downloading.
+window.addEventListener("focus", () => {
+  if (!snap || !aioOpenedAt || Date.now() - (refreshAfterAio.last || 0) < 15000) return;
+  if (WORKSHOP_GAMES.every((id) => snap.games.find((g) => g.id === id)?.installed)) return;
+  refreshAfterAio.last = Date.now();
+  refreshAfterAio(false).catch(() => {});
+});
 // Clicking the dimmed area left of a sheet closes it.
 document.addEventListener("pointerdown", (e) => {
   if (openSheet && !e.target.closest(".sheet") && !e.target.closest("#overlay")) closeSheet();
@@ -831,6 +911,8 @@ function tick() {
   nav.focus($("#btn-play"));
   api.on("game-event", onGameEvent);
   api.on("workshop-progress", onWorkshopProgress);
+  api.on("aio-launcher-progress", onAioProgress);
+  api.on("aio-launcher-closed", () => refreshAfterAio(true).catch(() => {}));
   tick();
   setInterval(tick, 15000);
 })();

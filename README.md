@@ -67,8 +67,26 @@ Multi-disc installs ask for the next disc as usual: mount or extract it and poin
 ## BFME All-in-One launcher
 
 The [BFME Foundation's All-in-One launcher](https://bfmeladder.com) installs BFME, BFME II and RotWK (Windows). Beacon
-**never downloads the games itself**; it finds the copies the launcher installed and uses them. The BFME games'
-pages and Launcher settings link to bfmeladder.com for getting the launcher.
+**never downloads the games itself**; it finds the copies the launcher installed and uses them.
+
+**Get the All-in-One launcher** (on the BFME games' pages and in Launcher settings, or `beacon aio-launcher install`)
+installs the launcher for you, and **Open the All-in-One launcher** (`beacon aio-launcher open`) starts it. You download
+the games inside the launcher; Beacon picks them up by itself (when the launcher closes, when you come back to Beacon,
+on `beacon status`, or with **Find games**). The bfmeladder.com link is still there.
+
+- **Where it comes from:** the launcher has no separate installer or GitHub release: it's one self-contained exe that
+  installs and updates itself. Beacon downloads it at the moment you ask from the same official URL the launcher's own
+  updater uses (`https://arena-files.bfmeladder.com/application-builds/all-in-one-launcher-main`, from its source,
+  `Data/Consts.cs`), https only (redirects too), at most 1 GB, and checks it is a Windows program and matches the MD5
+  the Foundation publishes for the current build (`https://bfmeladder.com/api/applications/versionHash?name=all-in-one-launcher&version=main`;
+  when that answer can't be read, the install says it wasn't compared). Beacon never ships or hosts the launcher.
+- **Where it goes:** where the launcher installs itself, `%APPDATA%\BFME All In One Launcher\AllInOneLauncher.exe`. On
+  Linux that's inside a Wine prefix of its own, `~/.local/share/beacon/prefixes/aio-launcher/pfx` (created with
+  `wineboot` through your default runner, or the best one found; the exe carries its own .NET runtime, so nothing else
+  is installed into the prefix). Games you install there with the launcher's default `C:` drive land in that prefix's
+  `drive_c` (`BFME1`, `BFME2`, `RotWK`). On Windows the launcher asks for administrator rights when it starts (UAC).
+- On its first start the launcher makes its own desktop/Start-menu shortcuts and uninstall entry, and from then on
+  updates itself.
 
 What Beacon reads (from the launcher's source):
 
@@ -83,7 +101,8 @@ What Beacon reads (from the launcher's source):
   `<game>\mod.txt` (its active mod), and its workshop mods in `<drive>:\BFME Workshop\Mods\<Name>-<id>`, which
   *Find mods on this PC* links into Beacon.
 
-`beacon aio` lists the games it manages.
+`beacon aio` lists the games it manages and whether the launcher is installed; `beacon aio-launcher status` shows the
+launcher alone.
 
 ## Workshop
 
@@ -368,6 +387,8 @@ beacon install-from conquest /run/media/$USER/CONQUEST   # …or the disc's fold
 beacon workshop rotwk --search edain     # fan content from the BFME workshop
 beacon workshop-install rotwk <id> --select
 beacon aio                               # games the BFME All-in-One launcher installed
+beacon aio-launcher install              # get the All-in-One launcher (from the BFME Foundation; never the games)
+beacon aio-launcher open                 # start it, download the games there; `beacon status` finds them
 ```
 
 ## For Hearth / scripting
@@ -391,7 +412,8 @@ Each prints one JSON document.
 | `log <game> [--lines N]` | `{game, path, exists, lines: [...]}`: the last N lines (default 200, at most 2000) |
 | `launch <game> --dry-run` | `{ok, game, message, command: {program, args, env: [[k, v]], cwd, display}, setup_first}` |
 | `workshop <game> [--search S] [--page N]` | `{game, page, source, items: [{id, name, version, author, description, kind, game, size, downloads, artwork_url, installed}], hidden}` (since 0.0.6; BFME, BFME II and RotWK only) |
-| `aio` | `{launcher_url, games: [{game, dir, active_patch, active_mod}], appdata: [...]}` (since 0.0.6) |
+| `aio` | `{launcher_url, games: [{game, dir, active_patch, active_mod}], appdata: [...], launcher}` (since 0.0.6; `launcher` since 0.0.7, as in `aio-launcher status`) |
+| `aio-launcher status` | `{installed, path, prefix, version, by_beacon, can_install, runner, download_url, site, log}` (since 0.0.7) |
 
 - **`GameStatus`:** `id, family, title, short, path, installed, runner, runner_choice, has_cd_key, resolution, windowed,
   extra_args, prefix_ready, virtual_desktop, steam_appid, via_steam, edition, selected_mod, tool_launcher, ready,
@@ -415,6 +437,13 @@ Each prints one JSON document.
   `kind` (workshop) is `patch`, `mod`, `enhancement` or `maps`; `installed` is the Beacon mod id it's installed as,
   or `null`; `size` is bytes; `hidden` counts the entries left out (base games, EA's official patches, snapshots,
   other games).
+- **`aio-launcher status`:** `path` is the launcher's exe (`null` when not installed); `prefix` the Wine prefix it runs
+  in on Linux (`null` on Windows); `version` the MD5 of the build Beacon installed (the launcher's own version id;
+  `null` when Beacon didn't install it or it has updated itself since); `by_beacon` whether Beacon installed it;
+  `can_install` whether `aio-launcher install` can run (Linux needs a runner); `runner` the runner id it uses on
+  Linux; `download_url` where `install` downloads it from; `log` Beacon's log for it.
+- `status` and `aio` also pick up BFME games the All-in-One launcher installed since the last look (its prefix on
+  Linux, the registry on Windows) and save their folders, so Hearth needn't `scan` after the launcher.
 
 ### Changing things
 
@@ -451,6 +480,8 @@ is one JSON object:
 | `launch <game> [--wait]` | | `pid`, `log`, and `exit_code` with `--wait` |
 | `install-from <game> <installer.exe \| image.iso \| folder>` | yes | `exit_code`, `setup`, `extracted` (where an image was extracted, or `null`), `found`, `installed` (since 0.0.6) |
 | `workshop-install <game> <id> [--select]` | yes | `id`, `name`, `version`, `kind`, `dir`, `files`, `bytes`, `skipped`, `mod` (as in `mods`), `selected` (since 0.0.6) |
+| `aio-launcher install` | yes | `path`, `prefix` (Linux; else `null`), `bytes`, `md5`, `verified` (the MD5 matched the published one), `launcher` (as in `aio-launcher status`) (since 0.0.7) |
+| `aio-launcher open` | | `pid`, `log`, `path` (since 0.0.7). It starts detached; download the games there, then `status` finds them |
 
 `run` runs an installer or patch inside the game's prefix (the game doesn't have to be installed yet: that's how a
 game's own installer is run), then scans for what it installed. `--tool` runs the game's `tool_launcher` (AotR's own
@@ -458,7 +489,9 @@ launcher). When the program closes with an error, the result is `{"ok":false,"ki
 `install-from` works the same way, after turning the player's own copy into a setup program (see
 [Install from your own copy](#install-from-your-own-copy)); a path that isn't an installer, image or folder is a
 `usage` error. `workshop` and `workshop-install` for a game the workshop doesn't cover are `usage` errors; asking
-`workshop-install` for a base game or EA patch fails (`failed`) without contacting the server.
+`workshop-install` for a base game or EA patch fails (`failed`) without contacting the server. `aio-launcher install`
+fails (`failed`) without a runner on Linux, when the download isn't the launcher or doesn't match the published MD5
+(nothing is installed then); `aio-launcher open` fails when the launcher isn't installed.
 
 **Windows.** The CLI is `beacon.exe` with the same commands and JSON. `runners` answers in the same shape with the
 `native` runner; `setup` reports `did_work: false`; `paths` still lists the (unused) prefix folders.

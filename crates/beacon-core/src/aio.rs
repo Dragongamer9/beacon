@@ -1,8 +1,9 @@
 //! The BFME Foundation's All-in-One launcher (<https://bfmeladder.com>).
 //!
 //! Beacon never downloads the base games: it finds copies the All-in-One
-//! launcher (or anything else) installed and uses them, and links to the
-//! launcher for people who want it. What the launcher leaves behind, from its
+//! launcher (or anything else) installed and uses them. It can install and open
+//! the launcher itself ([`crate::aio_launcher`]); the games are downloaded
+//! inside the launcher. What the launcher leaves behind, from its
 //! source (github.com/MarcellVokk/BfmeFoundationProject):
 //!
 //! * **Game folders:** `<drive>:\BFME1`, `<drive>:\BFME2`, `<drive>:\RotWK`

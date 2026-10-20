@@ -14,6 +14,7 @@
 //! real `%APPDATA%`.
 
 pub mod aio;
+pub mod aio_launcher;
 pub mod catalog;
 pub mod config;
 pub mod editions;
@@ -1007,6 +1008,10 @@ impl Beacon {
             out.extend(self.paths.appdata.clone());
         }
         let mut pfxs = self.wine_prefixes(&[]);
+        // The launcher's own prefix (Beacon installs it there), even before its registry exists.
+        if !self.native && self.launcher_prefix().join("drive_c").is_dir() {
+            pfxs.push(self.launcher_prefix());
+        }
         pfxs.extend(GameId::ALL.into_iter().filter_map(|g| self.game_dir(g)).filter_map(|d| aio::prefix_of(&d)));
         for p in pfxs {
             let a = options_ini::appdata_dir(&p);
