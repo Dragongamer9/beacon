@@ -1,15 +1,22 @@
 //! `beacon` – headless launcher for BFME, BFME II and RotWK.
 //! Handy over SSH, in scripts, and for Hearth to call into.
+//!
+//! Every command takes `--json` for machine-readable output (see `beacon_core::report` and the README's
+//! "For Hearth / scripting"). Without it, the output is for people, as before.
 
-use anyhow::{anyhow, bail, Result};
-use beacon_core::{games::GameId, mods::ModKind, Beacon, Level, Resolution};
+use anyhow::Result;
+use beacon_core::{editions, games::GameId, mods::ModKind, report, Beacon, Level, Resolution};
 use clap::{Parser, Subcommand};
-use std::io::BufRead;
-use std::path::PathBuf;
+use serde_json::{json, Value};
+use std::io::{BufRead, IsTerminal, Write};
+use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
 #[command(name = "beacon", version, about = "Linux launcher for BFME, AotR, LOTR: Conquest and other classic games")]
 struct Cli {
+    /// Machine-readable output: JSON, with progress lines for long jobs.
+    #[arg(long, global = true)]
+    json: bool,
     #[command(subcommand)]
     cmd: Option<Cmd>,
 }
@@ -17,19 +24,21 @@ struct Cli {
 #[derive(Subcommand)]
 enum Cmd {
     /// Show each game's state (default).
-    Status {
-        #[arg(long)]
-        json: bool,
-    },
+    Status,
     /// Look for installed games and fill in missing folders.
     Scan { roots: Vec<PathBuf> },
     /// Point a game at its folder (or its exe).
     SetPath { game: String, path: PathBuf },
-    /// Store the CD key from your own copy. Reads stdin if omitted.
-    SetKey { game: String, key: Option<String> },
+    /// Store the CD key from your own copy, read from stdin (never from the command line).
+    SetKey {
+        game: String,
+        /// Remove the saved key instead.
+        #[arg(long)]
+        clear: bool,
+    },
     /// List Wine/Proton/umu runners.
     Runners,
-    /// Pick a runner for one game, or `default` for all.
+    /// Pick a runner for one game, or `default` for all; `auto` goes back to automatic.
     SetRunner { game: String, runner: String },
     /// Set resolution, e.g. 1920x1080, or `clear`.
     Resolution { game: String, value: String },
@@ -45,8 +54,12 @@ enum Cmd {
     VirtualDesktop { game: String, value: String },
     /// For Steam copies (UaW, SWGB): launch through Steam on/off.
     ViaSteam { game: String, value: String },
-    /// Extra game arguments (quoted string; empty clears).
-    Args { game: String, args: String },
+    /// Extra game arguments (quoted string; empty clears). Put `--` before arguments that start with a dash.
+    Args {
+        game: String,
+        #[arg(allow_hyphen_values = true)]
+        args: String,
+    },
     /// List mods for a game.
     Mods { game: String },
     /// Link a mod from anywhere (.big, folder of .big files, or launcher .exe).
@@ -55,6 +68,9 @@ enum Cmd {
         path: PathBuf,
         #[arg(long)]
         name: Option<String>,
+        /// Also make it the mod the game starts with.
+        #[arg(long)]
+        select: bool,
     },
     /// Known mods for a game, with links and what's installed.
     Catalog { game: String },
@@ -86,21 +102,124 @@ enum Cmd {
         #[arg(long)]
         wait: bool,
     },
-    /// Run a Windows exe (patch, mod installer) in a game's prefix.
-    Run { game: String, exe: PathBuf },
+    /// Run a Windows exe (patch, mod installer, a game's own installer) in a game's prefix.
+    Run {
+        game: String,
+        #[arg(required_unless_present = "tool", conflicts_with = "tool")]
+        exe: Option<PathBuf>,
+        /// Run the game's own extra launcher instead (AotR's, for updates).
+        #[arg(long)]
+        tool: bool,
+    },
+    /// Show the end of a game's log.
+    Log {
+        game: String,
+        /// How many lines, from the end.
+        #[arg(long, default_value_t = 200)]
+        lines: usize,
+    },
     /// Show where config, prefixes, mods and logs live.
     Paths,
 }
 
+// ---------------------------------------------------------------- errors and output
+
+/// Bad arguments (exit code 2): an unknown game, mod, runner or step, or a malformed value.
+#[derive(Debug)]
+struct Usage(String);
+
+impl std::fmt::Display for Usage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Usage {}
+
+fn usage(msg: impl Into<String>) -> anyhow::Error {
+    anyhow::Error::new(Usage(msg.into()))
+}
+
+/// How a command's output goes out: for people, or as JSON.
+struct Ctx {
+    json: bool,
+    /// The CD key for `set-key`, instead of stdin (tests).
+    key_input: Option<String>,
+}
+
+impl Ctx {
+    /// A line for people (nothing in JSON mode).
+    fn say(&self, s: impl AsRef<str>) {
+        if !self.json {
+            println!("{}", s.as_ref());
+        }
+    }
+
+    /// A progress line for long jobs (JSON mode only).
+    fn progress(&self, pct: Option<u8>, text: &str) {
+        if self.json {
+            println!("{}", report::progress(pct, text));
+            let _ = std::io::stdout().flush();
+        }
+    }
+
+    fn read_key(&self, g: GameId) -> Result<String> {
+        if let Some(k) = &self.key_input {
+            return Ok(k.clone());
+        }
+        let stdin = std::io::stdin();
+        if stdin.is_terminal() && !self.json {
+            eprint!("CD key for {}: ", g.short());
+        }
+        let mut line = String::new();
+        stdin.lock().read_line(&mut line)?;
+        Ok(line)
+    }
+}
+
+/// The exit code for a command's outcome.
+fn exit_code(r: &Result<Value>) -> i32 {
+    match r {
+        Ok(v) if v.get("ok") == Some(&Value::Bool(false)) => report::EXIT_PROGRAM_FAILED,
+        Ok(_) => report::EXIT_OK,
+        Err(e) if e.downcast_ref::<Usage>().is_some() => report::EXIT_USAGE,
+        Err(_) => report::EXIT_FAILED,
+    }
+}
+
+/// The JSON line for a failed command.
+fn error_json(e: &anyhow::Error) -> Value {
+    report::error(if e.downcast_ref::<Usage>().is_some() { "usage" } else { "failed" }, &format!("{e:#}"))
+}
+
 fn game(s: &str) -> Result<GameId> {
-    GameId::parse(s).ok_or_else(|| anyhow!("unknown game \"{s}\" (use bfme1, bfme2, rotwk, aotr, conquest, uaw, exigo, rol or swgb)"))
+    GameId::parse(s).ok_or_else(|| usage(format!("unknown game \"{s}\" (use bfme1, bfme2, rotwk, aotr, conquest, uaw, exigo, rol or swgb)")))
 }
 
 fn on_off(s: &str) -> Result<bool> {
     match s.to_ascii_lowercase().as_str() {
         "on" | "true" | "yes" | "1" => Ok(true),
         "off" | "false" | "no" | "0" => Ok(false),
-        _ => bail!("expected on or off"),
+        _ => Err(usage("expected on or off")),
+    }
+}
+
+fn file_name(p: &Path) -> String {
+    p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| p.display().to_string())
+}
+
+/// The result of running a Windows program: ok when it exited cleanly, otherwise ok:false (exit code 3).
+fn program_result(g: GameId, st: &std::process::ExitStatus, what: &str, extra: Value) -> Value {
+    let code = st.code();
+    let mut extra = extra;
+    if let Some(o) = extra.as_object_mut() {
+        o.insert("exit_code".into(), json!(code));
+    }
+    if st.success() {
+        report::ok(Some(g), format!("{what} finished"), extra)
+    } else {
+        let how = code.map(|c| format!("code {c}")).unwrap_or_else(|| "it was stopped".into());
+        report::program_failed(g, format!("{what} closed with an error ({how}); see the log"), extra)
     }
 }
 
@@ -126,240 +245,600 @@ fn print_status(b: &Beacon) {
     }
 }
 
-fn main() -> Result<()> {
-    let cli = Cli::parse();
-    let mut b = Beacon::load()?;
-    match cli.cmd.unwrap_or(Cmd::Status { json: false }) {
-        Cmd::Status { json } => {
-            if json {
-                println!("{}", serde_json::to_string_pretty(&b.statuses())?);
-            } else {
-                print_status(&b);
+fn main() {
+    let json_wanted = std::env::args_os().any(|a| a.to_str() == Some("--json"));
+    let cli = match Cli::try_parse() {
+        Ok(c) => c,
+        Err(e) => {
+            use clap::error::ErrorKind;
+            let shows_text = matches!(e.kind(), ErrorKind::DisplayHelp | ErrorKind::DisplayVersion | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand);
+            if json_wanted && !shows_text {
+                let text = e.to_string();
+                let first = text.lines().next().unwrap_or("bad arguments").trim_start_matches("error: ").to_string();
+                println!("{}", report::error("usage", &first));
+                std::process::exit(report::EXIT_USAGE);
             }
+            e.exit();
+        }
+    };
+    let ctx = Ctx { json: cli.json, key_input: None };
+    let cmd = cli.cmd.unwrap_or(Cmd::Status);
+    let pretty = matches!(cmd, Cmd::Status);
+    let result = Beacon::load().and_then(|mut b| run(&ctx, &mut b, cmd));
+    match &result {
+        Ok(v) if ctx.json => {
+            let text = if pretty { serde_json::to_string_pretty(v) } else { serde_json::to_string(v) };
+            println!("{}", text.unwrap_or_else(|_| "null".into()));
+        }
+        Ok(_) => {}
+        Err(e) if ctx.json => println!("{}", error_json(e)),
+        Err(e) => eprintln!("Error: {e:#}"),
+    }
+    let _ = std::io::stdout().flush();
+    std::process::exit(exit_code(&result));
+}
+
+// ---------------------------------------------------------------- the commands
+
+/// Runs one command. Returns the JSON result (printed by `main` in JSON mode); people's output is printed here.
+fn run(ctx: &Ctx, b: &mut Beacon, cmd: Cmd) -> Result<Value> {
+    Ok(match cmd {
+        Cmd::Status => {
+            if !ctx.json {
+                print_status(b);
+            }
+            report::status(b)
         }
         Cmd::Scan { roots } => {
-            let found = b.scan(&roots);
+            let found = b.scan_with(&roots, &mut |i: usize, n: usize, root: &Path| {
+                ctx.progress(Some(report::pct(i, n, 0, 95)), &format!("Looking in {}", root.display()));
+            });
+            b.save()?;
             if found.is_empty() {
-                println!("No games found. Use `beacon set-path <game> <folder>` or `beacon scan <folder>`.");
+                ctx.say("No games found. Use `beacon set-path <game> <folder>` or `beacon scan <folder>`.");
             }
             for f in &found {
-                println!("found {} in {}", f.game.short(), f.dir.display());
+                ctx.say(format!("found {} in {}", f.game.short(), f.dir.display()));
             }
-            b.save()?;
-            println!();
-            print_status(&b);
+            if !ctx.json {
+                println!();
+                print_status(b);
+            }
+            let installed: Vec<&str> = b.statuses().iter().filter(|s| s.installed).map(|s| s.id.slug()).collect();
+            let msg = match found.len() {
+                0 => "No games found".to_string(),
+                1 => "Found 1 game".to_string(),
+                n => format!("Found {n} games"),
+            };
+            report::ok(None, msg, json!({"found": report::found(&found), "installed": installed}))
         }
         Cmd::SetPath { game: g, path } => {
             let g = game(&g)?;
             b.set_path(g, &path)?;
             b.save()?;
-            println!("{} → {}", g.short(), b.game(g).path.unwrap().display());
+            let dir = b.game(g).path.unwrap_or_default();
+            ctx.say(format!("{} → {}", g.short(), dir.display()));
+            report::ok(Some(g), format!("{} folder set", g.short()), json!({"path": report::path(&dir)}))
         }
-        Cmd::SetKey { game: g, key } => {
+        Cmd::SetKey { game: g, clear } => {
             let g = game(&g)?;
-            let key = match key {
-                Some(k) => k,
-                None => {
-                    eprint!("CD key for {}: ", g.short());
-                    let mut line = String::new();
-                    std::io::stdin().lock().read_line(&mut line)?;
-                    line
-                }
-            };
+            let key = if clear { String::new() } else { ctx.read_key(g)? };
             let key = key.trim().to_string();
+            if !clear && key.is_empty() {
+                return Err(usage("no CD key on stdin (use --clear to remove the saved one)"));
+            }
+            if key.len() > 64 || key.chars().any(|c| c.is_control()) {
+                return Err(usage("that doesn't look like a CD key"));
+            }
             b.game_mut(g).cd_key = (!key.is_empty()).then_some(key);
             b.save()?;
-            println!("Saved. It's applied on the next launch.");
+            let has = b.status(g).has_cd_key;
+            ctx.say(if has { "Saved. It's applied on the next launch." } else { "CD key removed." });
+            report::ok(Some(g), if has { "CD key saved" } else { "CD key removed" }, json!({"has_cd_key": has}))
         }
         Cmd::Runners => {
-            if b.runners.runners.is_empty() {
-                println!("No runners found. Install GE-Proton (e.g. with ProtonUp-Qt), umu-launcher, or wine.");
+            if !ctx.json {
+                if b.runners.runners.is_empty() {
+                    println!("No runners found. Install GE-Proton (e.g. with ProtonUp-Qt), umu-launcher, or wine.");
+                }
+                let best = b.runners.best().map(|r| r.id.clone());
+                for r in &b.runners.runners {
+                    let star = if Some(&r.id) == best.as_ref() { "*" } else { " " };
+                    println!("{star} {:<32} {}", r.id, r.path.display());
+                }
             }
-            let best = b.runners.best().map(|r| r.id.clone());
-            for r in &b.runners.runners {
-                let star = if Some(&r.id) == best.as_ref() { "*" } else { " " };
-                println!("{star} {:<32} {}", r.id, r.path.display());
-            }
+            report::runners(b)
         }
         Cmd::SetRunner { game: g, runner } => {
-            if b.runners.get(&runner).is_none() {
-                bail!("no runner {runner}; see `beacon runners`");
-            }
-            if g == "default" {
-                b.config.default_runner = Some(runner);
+            let choice = if runner == "auto" {
+                None
+            } else if b.runners.get(&runner).is_some() {
+                Some(runner)
             } else {
-                b.game_mut(game(&g)?).runner = Some(runner);
+                return Err(usage(format!("no runner {runner}; see `beacon runners`")));
+            };
+            let target = if g == "default" { None } else { Some(game(&g)?) };
+            match target {
+                None => b.config.default_runner = choice.clone(),
+                Some(gg) => b.game_mut(gg).runner = choice.clone(),
             }
             b.save()?;
+            let name = choice.as_deref().and_then(|id| b.runners.get(id)).map(|r| r.name.clone()).unwrap_or_else(|| "Automatic".into());
+            report::ok(target, format!("Runner: {name}"), json!({"runner": choice, "default": target.is_none()}))
         }
         Cmd::Resolution { game: g, value } => {
             let g = game(&g)?;
-            b.game_mut(g).resolution = if value == "clear" {
+            let res = if value == "clear" {
                 None
             } else {
-                Some(Resolution::parse(&value).ok_or_else(|| anyhow!("use WIDTHxHEIGHT, e.g. 1920x1080"))?)
+                Some(Resolution::parse(&value).ok_or_else(|| usage("use WIDTHxHEIGHT, e.g. 1920x1080, or clear"))?)
             };
+            b.game_mut(g).resolution = res;
             b.save()?;
+            let msg = match res {
+                Some(r) => format!("Resolution: {r}"),
+                None => "Resolution: the game's own setting".to_string(),
+            };
+            report::ok(Some(g), msg, json!({"resolution": res.map(|r| r.to_string())}))
         }
         Cmd::Windowed { game: g, value } => {
-            b.game_mut(game(&g)?).windowed = on_off(&value)?;
+            let g = game(&g)?;
+            let on = on_off(&value)?;
+            b.game_mut(g).windowed = on;
             b.save()?;
+            report::ok(Some(g), if on { "Windowed on" } else { "Windowed off" }, json!({"windowed": on}))
         }
         Cmd::Community { game: g } => {
             let g = game(&g)?;
-            let c = b.community(g);
-            if c.editions.is_empty() && c.steps.is_empty() {
-                println!("{} has no community version setup.", g.short());
-            }
-            for e in &c.editions {
-                let mark = if e.active { "*" } else if e.installed { "+" } else { " " };
-                println!("{mark} {:<20} {}{}", e.edition.id, e.edition.name, if e.edition.community { " (community)" } else { "" });
-            }
-            if !c.editions.is_empty() {
-                println!("  (* launches, + installed)\n");
-            }
-            for st in &c.steps {
-                println!("[{}] {:<18} {}\n    {}", if st.done { "x" } else { " " }, st.step.id, st.step.title, st.step.detail);
-                if let Some(u) = st.step.url {
-                    println!("    {u}");
+            if !ctx.json {
+                let c = b.community(g);
+                if c.editions.is_empty() && c.steps.is_empty() {
+                    println!("{} has no community version setup.", g.short());
+                }
+                for e in &c.editions {
+                    let mark = if e.active { "*" } else if e.installed { "+" } else { " " };
+                    println!("{mark} {:<20} {}{}", e.edition.id, e.edition.name, if e.edition.community { " (community)" } else { "" });
+                }
+                if !c.editions.is_empty() {
+                    println!("  (* launches, + installed)\n");
+                }
+                for st in &c.steps {
+                    println!("[{}] {:<18} {}\n    {}", if st.done { "x" } else { " " }, st.step.id, st.step.title, st.step.detail);
+                    if let Some(u) = st.step.url {
+                        println!("    {u}");
+                    }
                 }
             }
+            report::community(b, g)
         }
         Cmd::Edition { game: g, id } => {
             let g = game(&g)?;
+            if id != "auto" && !editions::editions(g).iter().any(|e| e.id == id) {
+                return Err(usage(format!("{} has no edition {id}; see `beacon community {}`", g.short(), g.slug())));
+            }
             b.set_edition(g, (id != "auto").then_some(id.as_str()))?;
             b.save()?;
+            let st = b.status(g);
+            let msg = format!("Version: {}", st.edition.as_deref().unwrap_or("automatic"));
+            report::ok(Some(g), msg, json!({"chosen": b.game(g).edition, "edition": st.edition}))
         }
         Cmd::AddFiles { game: g, step, path } => {
             let g = game(&g)?;
-            let step_def = beacon_core::editions::steps(g).into_iter().find(|s| s.id == step).ok_or_else(|| anyhow!("no step {step}; see `beacon community {}`", g.slug()))?;
-            if step_def.action == beacon_core::editions::Action::Installer {
-                b.setup(g, false)?;
-                let cmd = b.run_in_prefix_command(g, &path)?;
-                let st = b.spawn_logged(g, &cmd)?.wait()?;
-                if st.success() {
-                    b.mark_step(g, &step);
+            let step_def = editions::steps(g)
+                .into_iter()
+                .find(|s| s.id == step)
+                .ok_or_else(|| usage(format!("no step {step}; see `beacon community {}`", g.slug())))?;
+            match step_def.action {
+                editions::Action::Link => return Err(usage(format!("\"{}\" is only a link: open its page", step_def.title))),
+                editions::Action::Installer => {
+                    ctx.progress(Some(5), "Preparing the game's Wine prefix");
+                    b.prepare_prefix(g)?;
+                    let cmd = b.run_in_prefix_command(g, &path)?;
+                    ctx.progress(Some(15), &format!("Running {} — follow its window", file_name(&path)));
+                    let st = b.spawn_logged(g, &cmd)?.wait()?;
+                    if st.success() {
+                        b.mark_step(g, &step);
+                    }
+                    b.save()?;
+                    ctx.say(format!("Installer exited: {st}"));
+                    program_result(g, &st, &step_def.title.to_string(), json!({"step": step, "done": st.success()}))
                 }
-                println!("Installer exited: {st}");
-            } else {
-                println!("{}", b.add_files(g, &step, &path)?);
+                _ => {
+                    let msg = b.add_files_with(g, &step, &path, &mut |t: &str| ctx.progress(None, t))?;
+                    b.save()?;
+                    ctx.say(&msg);
+                    report::ok(Some(g), msg, json!({"step": step, "done": true, "edition": b.status(g).edition}))
+                }
             }
-            b.save()?;
         }
         Cmd::VirtualDesktop { game: g, value } => {
             let g = game(&g)?;
-            b.game_mut(g).virtual_desktop = if value == "default" { None } else { Some(on_off(&value)?) };
+            if g.is_sage() {
+                return Err(usage(format!("{} doesn't use a virtual desktop", g.short())));
+            }
+            let choice = if value == "default" { None } else { Some(on_off(&value)?) };
+            b.game_mut(g).virtual_desktop = choice;
             b.save()?;
+            let on = b.virtual_desktop(g);
+            report::ok(Some(g), if on { "Virtual desktop on" } else { "Virtual desktop off" }, json!({"virtual_desktop": on, "choice": choice}))
         }
         Cmd::ViaSteam { game: g, value } => {
             let g = game(&g)?;
             if g.steam_appid().is_none() {
-                bail!("{} has no Steam version Beacon knows about", g.short());
+                return Err(usage(format!("{} has no Steam version Beacon knows about", g.short())));
             }
-            b.game_mut(g).via_steam = on_off(&value)?;
+            let on = on_off(&value)?;
+            b.game_mut(g).via_steam = on;
             b.save()?;
+            let msg = if on { "Launching through Steam" } else { "Launching with Beacon" };
+            report::ok(Some(g), msg, json!({"via_steam": b.via_steam(g), "steam_copy": b.steam_appid(g).is_some()}))
         }
         Cmd::Args { game: g, args } => {
-            b.game_mut(game(&g)?).extra_args = args;
+            let g = game(&g)?;
+            if args.chars().any(|c| c.is_control()) {
+                return Err(usage("arguments can't contain control characters"));
+            }
+            b.game_mut(g).extra_args = args.clone();
             b.save()?;
+            report::ok(Some(g), if args.trim().is_empty() { "No extra arguments" } else { "Extra arguments saved" }, json!({"extra_args": args}))
         }
         Cmd::Mods { game: g } => {
             let g = game(&g)?;
-            let sel = b.status(g).selected_mod;
-            let mods = b.mods(g);
-            if mods.is_empty() {
-                println!("No mods. Drop them in {} or use `beacon add-mod`.", b.paths.mods_dir().join(g.slug()).display());
+            if !ctx.json {
+                let sel = b.status(g).selected_mod;
+                let mods = b.mods(g);
+                if mods.is_empty() {
+                    println!("No mods. Drop them in {} or use `beacon add-mod`.", b.paths.mods_dir().join(g.slug()).display());
+                }
+                for m in mods {
+                    let star = if Some(&m.id) == sel.as_ref() { "*" } else { " " };
+                    let kind = if m.kind == ModKind::Launcher { "launcher" } else { "mod" };
+                    println!("{star} {:<30} {:<9} {}", m.id, kind, m.path.display());
+                }
             }
-            for m in mods {
-                let star = if Some(&m.id) == sel.as_ref() { "*" } else { " " };
-                let kind = if m.kind == ModKind::Launcher { "launcher" } else { "mod" };
-                println!("{star} {:<30} {:<9} {}", m.id, kind, m.path.display());
-            }
+            report::mods(b, g)
         }
-        Cmd::AddMod { game: g, path, name } => {
-            let m = b.link_mod(game(&g)?, &path, name.as_deref())?;
+        Cmd::AddMod { game: g, path, name, select } => {
+            let g = game(&g)?;
+            let m = b.link_mod(g, &path, name.as_deref())?;
+            if select {
+                b.select_mod(g, Some(&m.id))?;
+            }
             b.save()?;
-            println!("added {} ({})", m.name, m.id);
+            ctx.say(format!("added {} ({})", m.name, m.id));
+            report::ok(Some(g), format!("Added {}", m.name), json!({"mod": report::value(&m), "selected": select}))
         }
         Cmd::Catalog { game: g } => {
             let g = game(&g)?;
-            for item in b.catalog(g) {
-                let mark = match &item.installed {
-                    Some(id) => format!("installed as {id}"),
-                    None => "not installed".into(),
-                };
-                println!("{} [{}] — {mark}\n    {}\n    {}", item.entry.name, if item.entry.kind == beacon_core::catalog::EntryKind::Patch { "patch" } else { "mod" }, item.entry.blurb, item.entry.url);
+            if !ctx.json {
+                for item in b.catalog(g) {
+                    let mark = match &item.installed {
+                        Some(id) => format!("installed as {id}"),
+                        None => "not installed".into(),
+                    };
+                    println!("{} [{}] — {mark}\n    {}\n    {}", item.entry.name, if item.entry.kind == beacon_core::catalog::EntryKind::Patch { "patch" } else { "mod" }, item.entry.blurb, item.entry.url);
+                }
             }
+            report::catalog(b, g)
         }
         Cmd::FindMods { roots } => {
-            let added = b.find_mods(&roots);
+            let added = b.find_mods_with(&roots, &mut |i: usize, n: usize, root: &Path| {
+                ctx.progress(Some(report::pct(i, n, 0, 95)), &format!("Looking in {}", root.display()));
+            });
             b.save()?;
             if added.is_empty() {
-                println!("No new mods found.");
+                ctx.say("No new mods found.");
             }
-            for m in added {
-                println!("added {} for {} ({})", m.name, m.game.short(), m.path.display());
+            for m in &added {
+                ctx.say(format!("added {} for {} ({})", m.name, m.game.short(), m.path.display()));
             }
+            let msg = match added.len() {
+                0 => "No new mods found".to_string(),
+                1 => "Found 1 mod".to_string(),
+                n => format!("Found {n} mods"),
+            };
+            report::ok(None, msg, json!({"added": report::value(&added)}))
         }
         Cmd::RemoveMod { id } => {
             if !b.unlink_mod(&id) {
-                bail!("no linked mod {id} (mods in the mods folder are removed by deleting them)");
+                return Err(usage(format!("no linked mod {id} (mods in the mods folder are removed by deleting them)")));
             }
             b.save()?;
+            report::ok(GameId::parse(id.split(':').next().unwrap_or("")), "Mod removed", json!({"removed": id}))
         }
         Cmd::SelectMod { game: g, id } => {
             let g = game(&g)?;
-            b.select_mod(g, (id != "none").then_some(id.as_str()))?;
+            let choice = (id != "none").then_some(id.as_str());
+            if let Some(m) = choice {
+                if b.find_mod(g, m).is_none() {
+                    return Err(usage(format!("no mod {m} for {}; see `beacon mods {}`", g.short(), g.slug())));
+                }
+            }
+            b.select_mod(g, choice)?;
             b.save()?;
+            report::ok(Some(g), if choice.is_some() { "Mod chosen" } else { "Playing without mods" }, json!({"selected": choice}))
         }
         Cmd::Setup { game: g, force } => {
             let g = game(&g)?;
-            println!("Preparing {} prefix (the first time can take a minute)…", g.short());
-            if b.setup(g, force)? {
-                println!("Done.");
+            ctx.say(format!("Preparing {} prefix (the first time can take a minute)…", g.short()));
+            ctx.progress(Some(5), "Checking the game's setup");
+            let needed = !b.via_steam(g) && (force || b.needs_setup(g)?);
+            if needed {
+                ctx.progress(Some(20), "Creating the Wine prefix and adding the game's registry keys (the first time can take a minute)");
+            }
+            let did = b.setup(g, force)?;
+            if did {
+                ctx.say("Done.");
             } else {
-                println!("Already set up. Use --force to redo it.");
+                ctx.say("Already set up. Use --force to redo it.");
             }
-            if let Some(f) = b.apply_options(g)? {
-                println!("Wrote {}", f.display());
+            ctx.progress(Some(90), "Writing the game's settings");
+            let written = b.apply_options(g)?;
+            if let Some(f) = &written {
+                ctx.say(format!("Wrote {}", f.display()));
             }
+            report::ok(Some(g), if did { "Ready to play" } else { "Already set up" }, json!({"did_work": did, "options_file": written.as_deref().map(report::path)}))
         }
         Cmd::Launch { game: g, mod_id, vanilla, dry_run, wait } => {
             let g = game(&g)?;
             let m = if vanilla { Some("") } else { mod_id.as_deref() };
             if dry_run {
                 let cmd = b.launch_command(g, m)?;
-                if b.needs_setup(g)? {
-                    println!("# setup first:\n(cd {} && {})", b.paths.prefix_root(g).display(), b.setup_command(g)?.display());
+                let setup_first = b.needs_setup(g).unwrap_or(false);
+                if !ctx.json {
+                    if b.needs_setup(g)? {
+                        println!("# setup first:\n(cd {} && {})", b.paths.prefix_root(g).display(), b.setup_command(g)?.display());
+                    }
+                    println!("(cd {} && {})", cmd.cwd.display(), cmd.display());
                 }
-                println!("(cd {} && {})", cmd.cwd.display(), cmd.display());
-                return Ok(());
+                return Ok(report::ok(Some(g), "What Beacon would run", json!({"command": report::command(&cmd), "setup_first": setup_first})));
             }
             let mut child = b.launch(g, m)?;
-            println!("Started {} (pid {}). Log: {}", g.short(), child.id(), b.paths.log_file(g).display());
+            let log = b.paths.log_file(g);
+            ctx.say(format!("Started {} (pid {}). Log: {}", g.short(), child.id(), log.display()));
+            let mut extra = json!({"pid": child.id(), "log": report::path(&log)});
             if wait {
                 let st = child.wait()?;
-                println!("Exited: {st}");
+                ctx.say(format!("Exited: {st}"));
+                extra["exit_code"] = json!(st.code());
             }
+            report::ok(Some(g), if wait { "The game closed" } else { "Started" }, extra)
         }
-        Cmd::Run { game: g, exe } => {
+        Cmd::Run { game: g, exe, tool } => {
             let g = game(&g)?;
-            b.setup(g, false)?;
+            let exe = if tool {
+                b.status(g).tool_launcher.ok_or_else(|| usage(format!("{} has no launcher of its own", g.short())))?
+            } else {
+                exe.ok_or_else(|| usage("give the .exe to run"))?
+            };
+            ctx.progress(Some(5), "Preparing the game's Wine prefix");
+            b.prepare_prefix(g)?;
             let cmd = b.run_in_prefix_command(g, &exe)?;
+            ctx.progress(Some(15), &format!("Running {} — follow its window. Some installers work for a long time without showing progress.", file_name(&exe)));
             let st = b.spawn_logged(g, &cmd)?.wait()?;
-            println!("Exited: {st}");
+            ctx.say(format!("Exited: {st}"));
+            ctx.progress(Some(90), "Looking for newly installed games");
             // Pick up anything the installer just put in the prefix.
-            for f in b.scan(&[]) {
-                println!("found {} in {}", f.game.short(), f.dir.display());
+            let found = b.scan(&[]);
+            for f in &found {
+                ctx.say(format!("found {} in {}", f.game.short(), f.dir.display()));
             }
             b.save()?;
+            let what = if tool { "The launcher".to_string() } else { file_name(&exe) };
+            program_result(g, &st, &what, json!({"found": report::found(&found), "installed": b.status(g).installed}))
+        }
+        Cmd::Log { game: g, lines } => {
+            let g = game(&g)?;
+            let v = report::log(b, g, lines);
+            if !ctx.json {
+                if v["exists"] == true {
+                    println!("== {}", b.paths.log_file(g).display());
+                    for l in v["lines"].as_array().into_iter().flatten() {
+                        println!("{}", l.as_str().unwrap_or(""));
+                    }
+                } else {
+                    println!("No log yet for {} — launch or set up the game first.", g.short());
+                }
+            }
+            v
         }
         Cmd::Paths => {
-            println!("config:   {}", b.paths.config_file.display());
-            println!("prefixes: {}", b.paths.data_dir.join("prefixes").display());
-            println!("mods:     {}", b.paths.mods_dir().display());
-            println!("logs:     {}", b.paths.data_dir.join("logs").display());
+            if !ctx.json {
+                println!("config:   {}", b.paths.config_file.display());
+                println!("prefixes: {}", b.paths.data_dir.join("prefixes").display());
+                println!("mods:     {}", b.paths.mods_dir().display());
+                println!("logs:     {}", b.paths.data_dir.join("logs").display());
+            }
+            report::paths(b)
         }
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use beacon_core::config::Paths;
+    use clap::CommandFactory;
+    use std::fs;
+
+    #[test]
+    fn cli_definition_is_valid() {
+        Cli::command().debug_assert();
     }
-    Ok(())
+
+    fn parse(args: &[&str]) -> Cli {
+        Cli::try_parse_from(args).unwrap()
+    }
+
+    #[test]
+    fn json_goes_anywhere() {
+        // Hearth's existing call, and the flag before the command.
+        assert!(parse(&["beacon", "status", "--json"]).json);
+        assert!(parse(&["beacon", "--json", "status"]).json);
+        assert!(!parse(&["beacon", "status"]).json);
+        let c = parse(&["beacon", "--json", "args", "rotwk", "--", "-noshellmap -win"]);
+        assert!(matches!(c.cmd, Some(Cmd::Args { ref args, .. }) if args == "-noshellmap -win"));
+    }
+
+    #[test]
+    fn cd_key_never_on_the_command_line() {
+        assert!(Cli::try_parse_from(["beacon", "set-key", "bfme2", "ABCD-EFGH"]).is_err());
+        assert!(matches!(parse(&["beacon", "set-key", "bfme2"]).cmd, Some(Cmd::SetKey { clear: false, .. })));
+        assert!(matches!(parse(&["beacon", "set-key", "bfme2", "--clear"]).cmd, Some(Cmd::SetKey { clear: true, .. })));
+    }
+
+    #[test]
+    fn run_takes_an_exe_or_the_tool() {
+        assert!(Cli::try_parse_from(["beacon", "run", "aotr"]).is_err());
+        assert!(Cli::try_parse_from(["beacon", "run", "aotr", "/x.exe", "--tool"]).is_err());
+        assert!(matches!(parse(&["beacon", "run", "aotr", "--tool"]).cmd, Some(Cmd::Run { tool: true, exe: None, .. })));
+        assert!(matches!(parse(&["beacon", "log", "aotr"]).cmd, Some(Cmd::Log { lines: 200, .. })));
+    }
+
+    struct T {
+        _t: tempfile::TempDir,
+        b: Beacon,
+        games: PathBuf,
+    }
+
+    fn setup() -> T {
+        let t = tempfile::tempdir().unwrap();
+        let home = t.path().join("home");
+        let games = home.join("Games");
+        for (d, exe) in [("BFME2", "lotrbfme2.exe"), ("RotWK", "lotrbfme2ep1.exe")] {
+            fs::create_dir_all(games.join(d)).unwrap();
+            fs::write(games.join(d).join(exe), b"").unwrap();
+        }
+        let bin = t.path().join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        let wine = bin.join("wine");
+        fs::write(&wine, "#!/bin/sh\nmkdir -p \"$WINEPREFIX/drive_c/users/tester\"\nexit 0\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&wine, fs::Permissions::from_mode(0o755)).unwrap();
+        let b = Beacon::load_with(Paths::under(&t.path().join("beacon"), &home), &bin.to_string_lossy()).unwrap();
+        T { _t: t, b, games }
+    }
+
+    fn json_ctx() -> Ctx {
+        Ctx { json: true, key_input: None }
+    }
+
+    fn go(t: &mut T, args: &[&str]) -> Result<Value> {
+        let mut all = vec!["beacon", "--json"];
+        all.extend_from_slice(args);
+        let cli = Cli::try_parse_from(all).unwrap();
+        run(&json_ctx(), &mut t.b, cli.cmd.unwrap())
+    }
+
+    #[test]
+    fn write_results_and_exit_codes() {
+        let mut t = setup();
+        let r = go(&mut t, &["scan"]);
+        assert_eq!(exit_code(&r), 0);
+        let v = r.unwrap();
+        assert_eq!((v["ok"].as_bool(), v["game"].is_null()), (Some(true), true));
+        assert_eq!(v["found"].as_array().unwrap().len(), 2);
+        assert!(v["installed"].as_array().unwrap().iter().any(|g| g == "rotwk"));
+
+        let v = go(&mut t, &["resolution", "rotwk", "1280x800"]).unwrap();
+        assert_eq!(v, json!({"ok": true, "game": "rotwk", "message": "Resolution: 1280x800", "resolution": "1280x800"}));
+        assert_eq!(t.b.game(GameId::Rotwk).resolution.unwrap().to_string(), "1280x800");
+
+        // Bad input: exit code 2, kind "usage".
+        let r = go(&mut t, &["resolution", "rotwk", "huge"]);
+        assert_eq!(exit_code(&r), 2);
+        assert_eq!(error_json(r.as_ref().unwrap_err())["kind"], "usage");
+        assert_eq!(exit_code(&go(&mut t, &["windowed", "nope", "on"])), 2);
+        assert_eq!(exit_code(&go(&mut t, &["set-runner", "rotwk", "proton:missing"])), 2);
+        assert_eq!(exit_code(&go(&mut t, &["select-mod", "rotwk", "rotwk:missing"])), 2);
+        assert_eq!(exit_code(&go(&mut t, &["virtual-desktop", "rotwk", "on"])), 2);
+        assert_eq!(exit_code(&go(&mut t, &["add-files", "swgb", "nope", "/tmp"])), 2);
+        // Something that fails for another reason: exit code 1, kind "failed".
+        let r = go(&mut t, &["set-path", "bfme1", "/nonexistent-folder"]);
+        assert_eq!(exit_code(&r), 1);
+        assert_eq!(error_json(r.as_ref().unwrap_err())["kind"], "failed");
+
+        let v = go(&mut t, &["set-runner", "rotwk", "wine:system"]).unwrap();
+        assert_eq!((v["runner"].as_str(), v["default"].as_bool()), (Some("wine:system"), Some(false)));
+        let v = go(&mut t, &["set-runner", "default", "auto"]).unwrap();
+        assert!(v["runner"].is_null() && v["game"].is_null() && v["default"] == true);
+
+        let v = go(&mut t, &["args", "rotwk", "--", "-noshellmap"]).unwrap();
+        assert_eq!(v["extra_args"], "-noshellmap");
+        assert_eq!(go(&mut t, &["windowed", "rotwk", "on"]).unwrap()["windowed"], true);
+        let v = go(&mut t, &["virtual-desktop", "swgb", "off"]).unwrap();
+        assert_eq!((v["virtual_desktop"].as_bool(), v["choice"].as_bool()), (Some(false), Some(false)));
+        assert!(go(&mut t, &["via-steam", "swgb", "on"]).unwrap()["steam_copy"] == false);
+    }
+
+    #[test]
+    fn cd_key_comes_from_stdin_and_is_never_echoed() {
+        let mut t = setup();
+        let cli = Cli::try_parse_from(["beacon", "--json", "set-key", "bfme2"]).unwrap();
+        let ctx = Ctx { json: true, key_input: Some("SECRET-KEY-1234\n".into()) };
+        let v = run(&ctx, &mut t.b, cli.cmd.unwrap()).unwrap();
+        assert_eq!(v, json!({"ok": true, "game": "bfme2", "message": "CD key saved", "has_cd_key": true}));
+        assert!(!v.to_string().contains("SECRET"));
+        assert_eq!(t.b.game(GameId::Bfme2).cd_key.as_deref(), Some("SECRET-KEY-1234"));
+        let ctx = Ctx { json: true, key_input: Some("\n".into()) };
+        let cli = Cli::try_parse_from(["beacon", "--json", "set-key", "bfme2"]).unwrap();
+        assert_eq!(exit_code(&run(&ctx, &mut t.b, cli.cmd.unwrap())), 2, "an empty key isn't a silent clear");
+        let v = go(&mut t, &["set-key", "bfme2", "--clear"]).unwrap();
+        assert_eq!(v["has_cd_key"], false);
+        assert!(t.b.game(GameId::Bfme2).cd_key.is_none());
+    }
+
+    #[test]
+    fn mods_and_setup() {
+        let mut t = setup();
+        go(&mut t, &["scan"]).unwrap();
+        let big = t.games.join("widescreen.big");
+        fs::write(&big, b"").unwrap();
+        let v = go(&mut t, &["add-mod", "rotwk", big.to_str().unwrap(), "--name", "Widescreen", "--select"]).unwrap();
+        assert_eq!((v["mod"]["id"].as_str(), v["selected"].as_bool()), (Some("rotwk:widescreen"), Some(true)));
+        let m = go(&mut t, &["mods", "rotwk"]).unwrap();
+        assert_eq!(m["selected"], "rotwk:widescreen");
+        assert_eq!(go(&mut t, &["select-mod", "rotwk", "none"]).unwrap()["selected"], Value::Null);
+        assert_eq!(go(&mut t, &["remove-mod", "rotwk:widescreen"]).unwrap()["removed"], "rotwk:widescreen");
+        assert_eq!(exit_code(&go(&mut t, &["remove-mod", "rotwk:widescreen"])), 2);
+        assert!(go(&mut t, &["catalog", "rotwk"]).unwrap()["items"].as_array().unwrap().len() > 2);
+        assert_eq!(go(&mut t, &["find-mods"]).unwrap()["added"], json!([]));
+
+        let v = go(&mut t, &["setup", "bfme2"]).unwrap();
+        assert_eq!((v["ok"].as_bool(), v["did_work"].as_bool()), (Some(true), Some(true)));
+        assert_eq!(go(&mut t, &["setup", "bfme2"]).unwrap()["did_work"], false);
+        let l = go(&mut t, &["log", "bfme2", "--lines", "5"]).unwrap();
+        assert_eq!(l["exists"], true);
+        assert!(l["lines"][0].as_str().unwrap().starts_with("== beacon setup"));
+        let d = go(&mut t, &["launch", "bfme2", "--dry-run"]).unwrap();
+        assert!(d["command"]["display"].as_str().unwrap().contains("lotrbfme2.exe"));
+        assert_eq!(go(&mut t, &["runners"]).unwrap()["best"], "wine:system");
+        assert!(go(&mut t, &["paths"]).unwrap()["games"]["rotwk"]["log"].as_str().unwrap().ends_with("rotwk.log"));
+        assert_eq!(go(&mut t, &["community", "uaw"]).unwrap()["steps"][0]["id"], "patch3");
+        let s = go(&mut t, &["status"]).unwrap();
+        assert_eq!(s[1]["id"], "bfme2");
+        assert_eq!(s[1]["needs_setup"], false);
+    }
+
+    #[test]
+    fn installers_report_their_exit() {
+        let mut t = setup();
+        go(&mut t, &["scan"]).unwrap();
+        let exe = t.games.join("patch.exe");
+        fs::write(&exe, b"").unwrap();
+        let r = go(&mut t, &["run", "rotwk", exe.to_str().unwrap()]);
+        assert_eq!(exit_code(&r), 0);
+        let v = r.unwrap();
+        assert_eq!((v["ok"].as_bool(), v["exit_code"].as_i64(), v["installed"].as_bool()), (Some(true), Some(0), Some(true)));
+        assert_eq!(exit_code(&go(&mut t, &["run", "rotwk", "--tool"])), 2, "RotWK has no launcher of its own");
+
+        // A failing installer: ok false, exit code 3.
+        let bin = t.b.runners.get("wine:system").unwrap().path.clone();
+        fs::write(&bin, "#!/bin/sh\nexit 4\n").unwrap();
+        let r = go(&mut t, &["run", "conquest", exe.to_str().unwrap()]);
+        assert_eq!(exit_code(&r), 3);
+        let v = r.unwrap();
+        assert_eq!((v["ok"].as_bool(), v["kind"].as_str(), v["exit_code"].as_i64()), (Some(false), Some("program"), Some(4)));
+        assert!(t.b.paths.prefix_root(GameId::Conquest).is_dir(), "an installer gets a prefix before its game exists");
+    }
 }

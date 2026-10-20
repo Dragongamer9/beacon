@@ -251,8 +251,9 @@ fn start(app: AppHandle, state: &AppState, game: GameId, mod_id: Option<String>,
 
     std::thread::spawn(move || {
         emit(&app, game, "preparing", None);
-        let started = beacon
-            .setup(game, false)
+        // An installer may be installing the game itself: its prefix can't get the game's registry keys yet.
+        let prepared = if installer.is_some() { beacon.prepare_prefix(game) } else { beacon.setup(game, false) };
+        let started = prepared
             .and_then(|_| beacon.apply_options(game))
             .and_then(|_| beacon.spawn_logged(game, &cmd));
         match started {
