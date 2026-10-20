@@ -1,10 +1,11 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Beacon",
-  "version": "0.0.1",
+  "version": "0.0.5",
   "identifier": "io.github.dragongamer9.beacon",
   "build": {
-    "frontendDist": "../ui"
+    "frontendDist": "../ui",
+    "beforeBuildCommand": "cargo build --release -p beacon-cli"
   },
   "app": {
     "withGlobalTauri": true,
@@ -27,8 +28,33 @@
   "bundle": {
     "active": true,
     "targets": ["appimage", "deb", "rpm"],
-    "category": "Game",
+    "category": "StrategyGame",
     "shortDescription": "Launcher for BFME, LOTR and other classic strategy games on Linux",
-    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.png"]
+    "longDescription": "Beacon is a controller-first Linux launcher for The Lord of the Rings: The Battle for Middle-earth I and II, The Rise of the Witch-king, Age of the Ring, The Lord of the Rings: Conquest and a few classic strategy games (Universe at War, Armies of Exigo, Rise of Legends, Star Wars: Galactic Battlegrounds). It finds your installs, gives each game its own Wine or Proton prefix with the registry keys it needs, sets the resolution and manages mods. It includes the beacon command-line tool. The games are not included.",
+    "homepage": "https://github.com/Dragongamer9/beacon",
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.png"],
+    "linux": {
+      "deb": {
+        "section": "games",
+        "depends": ["xdg-utils"],
+        "desktopTemplate": "../packaging/beacon.desktop",
+        "files": {
+          "/usr/bin/beacon": "../target/release/beacon"
+        }
+      },
+      "rpm": {
+        "release": "1",
+        "depends": ["xdg-utils"],
+        "desktopTemplate": "../packaging/beacon.desktop",
+        "files": {
+          "/usr/bin/beacon": "../target/release/beacon"
+        }
+      },
+      "appimage": {
+        "files": {
+          "/usr/bin/beacon": "../target/release/beacon"
+        }
+      }
+    }
   }
 }

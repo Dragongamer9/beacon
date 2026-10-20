@@ -175,6 +175,49 @@ To add more catalog entries, edit `crates/beacon-core/src/catalog.rs`.
 
 On rows with ◂ ▸ (runner, resolution), use left and right to change the value.
 
+## Install
+
+Download a package from [Releases](https://github.com/Dragongamer9/beacon/releases). Every package has Beacon's window (`beacon-app`) and the `beacon` command-line tool. You need WebKitGTK 4.1, which most desktops already have, and Wine or Proton to run the games.
+
+| Package | Latest download |
+|---|---|
+| AppImage (any distro) | [Beacon-x86_64.AppImage](https://github.com/Dragongamer9/beacon/releases/latest/download/Beacon-x86_64.AppImage) |
+| Debian, Ubuntu, Mint, Pop!_OS | [beacon_amd64.deb](https://github.com/Dragongamer9/beacon/releases/latest/download/beacon_amd64.deb) |
+| Fedora, Bazzite, openSUSE | [beacon.x86_64.rpm](https://github.com/Dragongamer9/beacon/releases/latest/download/beacon.x86_64.rpm) |
+| Arch, CachyOS, anything else | [beacon-x86_64-linux.tar.gz](https://github.com/Dragongamer9/beacon/releases/latest/download/beacon-x86_64-linux.tar.gz) |
+
+Each release also has versioned copies (`Beacon-<version>-x86_64.AppImage`, `beacon_<version>_amd64.deb`, `beacon-<version>-1.x86_64.rpm`) and a `SHA256SUMS` file.
+
+**AppImage.** Make it executable and run it:
+```sh
+chmod +x Beacon-x86_64.AppImage
+./Beacon-x86_64.AppImage
+```
+For the CLI, run `./Beacon-x86_64.AppImage --cli status`, or link it under the name `beacon`; the AppImage runs the CLI when it's started as `beacon`. Linking it as `beacon-app` too lets Hearth find both:
+```sh
+ln -s "$PWD/Beacon-x86_64.AppImage" ~/.local/bin/beacon
+ln -s "$PWD/Beacon-x86_64.AppImage" ~/.local/bin/beacon-app
+```
+
+**.deb:**
+```sh
+sudo apt install ./beacon_*_amd64.deb
+```
+
+**.rpm:**
+```sh
+sudo dnf install ./beacon-*.x86_64.rpm
+```
+On Bazzite and other atomic Fedoras, use `rpm-ostree install ./beacon-*.x86_64.rpm`, or use the AppImage.
+
+**tar.gz.** It holds `bin/beacon`, `bin/beacon-app`, the desktop file and the icons. Extract it into `~/.local` (or `/usr/local` with sudo):
+```sh
+tar -xzf beacon-x86_64-linux.tar.gz -C ~/.local
+```
+On Arch and CachyOS, install `webkit2gtk-4.1` first. `~/.local/bin` must be on your `PATH`.
+
+**CLI.** The .deb and .rpm install it as `/usr/bin/beacon`, and the tar.gz as `bin/beacon`. Hearth uses it (`beacon status --json`, `beacon launch <game> --wait`). See [Command line](#command-line).
+
 ## Building
 
 You need Rust (stable), plus the Tauri 2 system packages.
@@ -196,6 +239,8 @@ cargo build --release                # CLI → target/release/beacon
 cargo install tauri-cli --version '^2'
 cd src-tauri && cargo tauri build    # app + AppImage/deb/rpm in target/release/bundle
 ```
+
+`cargo tauri build` builds the `beacon` CLI first (`beforeBuildCommand`) and puts it in each package as `/usr/bin/beacon`. The Build workflow (`.github/workflows/build.yml`) does all of this on every push and pull request, and makes a release for each `v*` tag.
 
 During development, `cargo tauri dev` runs the app. You can also open `ui/index.html` in a browser: without Tauri, the UI runs against a built-in mock.
 

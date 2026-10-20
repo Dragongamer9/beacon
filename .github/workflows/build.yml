@@ -1,0 +1,222 @@
+# Tests Beacon and builds its Linux packages: an AppImage, a .deb, an .rpm and a plain tar.gz. Each one has
+# Beacon's window (beacon-app) and its command-line tool (beacon). On a v* tag they go into a GitHub Release,
+# also under fixed names so releases/latest/download/<name> links keep working.
+# Failures are reported as annotations with the last lines of output.
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: never
+
+jobs:
+  build:
+    # 22.04 for an older glibc (2.35), so the AppImage and the binaries run on more systems.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version
+        id: version
+        run: |
+          v=$(python3 -c 'import json; print(json.load(open("src-tauri/tauri.conf.json"))["version"])')
+          cv=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version *= *"\(.*\)"/\1/p' Cargo.toml)
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          if [ "$cv" != "$v" ]; then
+            echo "::warning title=Version mismatch::tauri.conf.json says $v, Cargo.toml says $cv. The packages are named after tauri.conf.json ($v)."
+          fi
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "${GITHUB_REF_NAME#v}" != "$v" ]; then
+            echo "::error title=Tag doesn't match the version::Tag $GITHUB_REF_NAME, but tauri.conf.json says $v. Set the version in tauri.conf.json and Cargo.toml to ${GITHUB_REF_NAME#v}, then tag again."
+            exit 1
+          fi
+          echo "::notice title=Version::$v"
+
+      - name: System packages for Tauri
+        run: |
+          set -o pipefail
+          log="$RUNNER_TEMP/apt.log"
+          if ! { sudo apt-get update -qq && sudo apt-get install -y -qq \
+              build-essential pkg-config curl wget file patchelf \
+              libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev libsoup-3.0-dev libgtk-3-dev \
+              libayatana-appindicator3-dev librsvg2-dev libssl-dev libxdo-dev \
+              rpm desktop-file-utils; } > "$log" 2>&1; then
+            echo "::error title=apt-get failed::$(tail -30 "$log" | tr '\n' '|' | cut -c1-3900)"
+            exit 1
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: UI fonts
+        # ui/fonts isn't in git; the app embeds ui/ when it's compiled, so the fonts must be there first.
+        run: |
+          set -o pipefail
+          if ! ./scripts/fetch-fonts.sh > "$RUNNER_TEMP/fonts.log" 2>&1; then
+            echo "::error title=Fetching the UI fonts failed::$(tail -20 "$RUNNER_TEMP/fonts.log" | tr '\n' '|' | cut -c1-3900)"
+            exit 1
+          fi
+          ls -l ui/fonts
+
+      - name: Check the desktop file
+        run: |
+          if ! out=$(desktop-file-validate packaging/beacon.desktop 2>&1); then
+            echo "::error file=packaging/beacon.desktop,title=Desktop file invalid::$(echo "$out" | tr '\n' '|' | cut -c1-3900)"
+            exit 1
+          fi
+          [ -z "$out" ] || echo "::warning file=packaging/beacon.desktop,title=Desktop file::$(echo "$out" | tr '\n' '|' | cut -c1-3900)"
+
+      - name: Test (cargo test --workspace)
+        run: |
+          set -o pipefail
+          log="$RUNNER_TEMP/test.log"
+          if ! cargo test --workspace 2>&1 | tee "$log"; then
+            echo "::error title=cargo test failed::$( (grep -E -A8 '^(error|---- |thread .* panicked)' "$log" | head -60; echo ===; tail -25 "$log") | tr '\n' '|' | cut -c1-3900)"
+            exit 1
+          fi
+          echo "::notice title=Tests::$(grep -E '^test result' "$log" | tr '\n' ' ' | cut -c1-3900)"
+
+      - name: Build the beacon CLI
+        run: |
+          set -o pipefail
+          log="$RUNNER_TEMP/cli.log"
+          if ! cargo build --release -p beacon-cli 2>&1 | tee "$log"; then
+            echo "::error title=beacon CLI build failed::$( (grep -E -A8 '^error' "$log" | head -60; echo ===; tail -20 "$log") | tr '\n' '|' | cut -c1-3900)"
+            exit 1
+          fi
+
+      - name: Build the app and its packages (tauri build)
+        working-directory: src-tauri
+        run: |
+          set -o pipefail
+          log="$RUNNER_TEMP/tauri.log"
+          # The Tauri CLI from npm (prebuilt, no compile). --verbose so linuxdeploy's output shows on failure.
+          if ! npx --yes @tauri-apps/cli@2 build --verbose --bundles appimage,deb,rpm 2>&1 | tee "$log"; then
+            echo "::error title=tauri build failed::$( (grep -E -i -A6 '^(error|\s*error)|failed' "$log" | head -60; echo ===; tail -40 "$log") | tr '\n' '|' | cut -c1-3900)"
+            exit 1
+          fi
+          ls -l ../target/release/bundle/*/
+
+      - name: Collect the packages
+        env:
+          V: ${{ steps.version.outputs.version }}
+        run: |
+          set -eu
+          b=target/release/bundle
+          for g in "$b/appimage/*.AppImage" "$b/deb/*.deb" "$b/rpm/*.rpm"; do
+            n=$(ls $g 2>/dev/null | wc -l)
+            if [ "$n" != 1 ]; then
+              echo "::error title=Package missing::expected one $g, found $n: $(ls $b/*/ 2>&1 | tr '\n' ' ' | cut -c1-3500)"
+              exit 1
+            fi
+          done
+          appimage=$(ls $b/appimage/*.AppImage); deb=$(ls $b/deb/*.deb); rpm=$(ls $b/rpm/*.rpm)
+          mkdir -p dist
+          cp "$appimage" "dist/Beacon-$V-x86_64.AppImage"
+          cp "$deb" "dist/beacon_${V}_amd64.deb"
+          cp "$rpm" "dist/beacon-$V-1.x86_64.rpm"
+          chmod +x "dist/Beacon-$V-x86_64.AppImage"
+
+          # Plain tar.gz (Arch, CachyOS…): a prefix layout, so `tar -xzf … -C ~/.local` (or /usr/local) installs it.
+          t="$RUNNER_TEMP/tar"; rm -rf "$t"; mkdir -p "$t/bin" "$t/share/applications"
+          install -m755 target/release/beacon target/release/beacon-app "$t/bin/"
+          install -m644 packaging/beacon.desktop "$t/share/applications/Beacon.desktop"
+          for i in 32x32:32x32 128x128:128x128 256x256:128x128@2x 512x512:icon; do
+            install -Dm644 "src-tauri/icons/${i#*:}.png" "$t/share/icons/hicolor/${i%%:*}/apps/beacon-app.png"
+          done
+          tar -C "$t" --owner=0 --group=0 -czf dist/beacon-x86_64-linux.tar.gz bin share
+
+          # Fixed names for releases/latest/download/… links.
+          cp "dist/Beacon-$V-x86_64.AppImage" dist/Beacon-x86_64.AppImage
+          cp "dist/beacon_${V}_amd64.deb" dist/beacon_amd64.deb
+          cp "dist/beacon-$V-1.x86_64.rpm" dist/beacon.x86_64.rpm
+
+          (cd dist && sha256sum -- * > SHA256SUMS)
+          cat dist/SHA256SUMS
+          ls -l dist
+
+      - name: Check what's in each package
+        env:
+          V: ${{ steps.version.outputs.version }}
+        run: |
+          set -u
+          fail() { echo "::error title=$1::$2"; bad=1; }
+          bad=0
+          need="usr/bin/beacon usr/bin/beacon-app usr/share/applications/Beacon.desktop usr/share/icons/hicolor/128x128/apps/beacon-app.png"
+
+          deb="dist/beacon_${V}_amd64.deb"
+          dl=$(dpkg-deb -c "$deb" | awk '{print $NF}' | sed 's|^\./||')
+          for f in $need; do echo "$dl" | grep -qx "$f" || fail "deb: $f missing" "$(echo "$dl" | tr '\n' ' ' | cut -c1-3500)"; done
+          echo "::notice title=deb control::$(dpkg-deb -f "$deb" Package Version Depends Section | tr '\n' '|')"
+          d="$RUNNER_TEMP/deb"; rm -rf "$d"; dpkg-deb -x "$deb" "$d"
+          out=$("$d/usr/bin/beacon" --version 2>&1) || fail "deb: beacon --version failed" "$out"
+          grep -q '^Icon=beacon-app$' "$d/usr/share/applications/Beacon.desktop" || fail "deb: desktop file" "$(tr '\n' '|' < "$d/usr/share/applications/Beacon.desktop")"
+
+          rpmf="dist/beacon-$V-1.x86_64.rpm"
+          rl=$(rpm -qlp "$rpmf" 2>/dev/null | sed 's|^/||')
+          for f in $need; do echo "$rl" | grep -qx "$f" || fail "rpm: $f missing" "$(echo "$rl" | tr '\n' ' ' | cut -c1-3500)"; done
+          echo "::notice title=rpm::$(rpm -qp --qf '%{NAME} %{VERSION}-%{RELEASE} %{ARCH} | License: %{LICENSE} | Requires: ' "$rpmf" 2>/dev/null)$(rpm -qpR "$rpmf" 2>/dev/null | grep -v '^rpmlib' | tr '\n' ' ')"
+
+          ai="$PWD/dist/Beacon-$V-x86_64.AppImage"
+          a="$RUNNER_TEMP/appimage"; rm -rf "$a"; mkdir -p "$a"
+          (cd "$a" && "$ai" --appimage-extract >/dev/null 2>&1) || fail "AppImage: extract failed" "--appimage-extract didn't work"
+          for f in $need; do [ -e "$a/squashfs-root/$f" ] || fail "AppImage: $f missing" "$(cd "$a/squashfs-root" 2>/dev/null && find usr/bin usr/share/applications -maxdepth 1 | tr '\n' ' ')"; done
+          # The CLI through the AppImage: --cli, and through a symlink named beacon (no display needed, the
+          # app hands over to the CLI before it opens a window).
+          export APPIMAGE_EXTRACT_AND_RUN=1
+          out=$("$ai" --cli --version 2>&1) && echo "$out" | grep -q '^beacon ' \
+            && echo "::notice title=AppImage --cli::$out" \
+            || fail "AppImage: --cli didn't reach the beacon CLI" "$(echo "$out" | tail -15 | tr '\n' '|')"
+          ln -sf "$ai" "$a/beacon"
+          out=$("$a/beacon" --version 2>&1) && echo "$out" | grep -q '^beacon ' \
+            && echo "::notice title=AppImage as beacon (symlink)::$out" \
+            || echo "::warning title=AppImage via a symlink named beacon didn't reach the CLI::$(echo "$out" | tail -15 | tr '\n' '|') (Beacon.AppImage --cli … still works)"
+
+          echo "::notice title=Sizes::$(cd dist && ls -sh Beacon-$V-x86_64.AppImage beacon_${V}_amd64.deb beacon-$V-1.x86_64.rpm beacon-x86_64-linux.tar.gz | tr '\n' ' ')"
+          exit $bad
+
+      - name: Upload the packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: beacon-${{ steps.version.outputs.version }}-linux-x86_64
+          path: |
+            dist/*
+            !dist/Beacon-x86_64.AppImage
+            !dist/beacon_amd64.deb
+            !dist/beacon.x86_64.rpm
+          if-no-files-found: error
+
+      - name: GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          V: ${{ steps.version.outputs.version }}
+        run: |
+          set -o pipefail
+          tag="$GITHUB_REF_NAME"
+          log="$RUNNER_TEMP/release.log"
+          {
+            if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              gh release upload "$tag" dist/* --clobber --repo "$GITHUB_REPOSITORY"
+            else
+              # A full release, not a pre-release: releases/latest only points at full releases.
+              gh release create "$tag" dist/* --repo "$GITHUB_REPOSITORY" --verify-tag \
+                --title "Beacon $V" --generate-notes
+            fi
+          } > "$log" 2>&1 || { echo "::error title=Release failed::$(tail -20 "$log" | tr '\n' '|' | cut -c1-3900)"; exit 1; }
+          echo "::notice title=Released::Beacon $V: https://github.com/$GITHUB_REPOSITORY/releases/tag/$tag"
