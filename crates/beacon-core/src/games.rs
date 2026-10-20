@@ -20,6 +20,14 @@ pub enum GameId {
     Aotr,
     /// The Lord of the Rings: Conquest (Pandemic, 2009).
     Conquest,
+    /// Universe at War: Earth Assault (Petroglyph, 2007).
+    Uaw,
+    /// Armies of Exigo (Black Hole Entertainment, 2004).
+    Exigo,
+    /// Rise of Nations: Rise of Legends (Big Huge Games, 2006).
+    Rol,
+    /// Star Wars: Galactic Battlegrounds Saga (LucasArts, 2001).
+    Swgb,
 }
 
 /// Which shelf section a game sits in.
@@ -30,10 +38,22 @@ pub enum Family {
     Bfme,
     /// Other Lord of the Rings games.
     Lotr,
+    /// Everything else.
+    Other,
 }
 
 impl GameId {
-    pub const ALL: [GameId; 5] = [GameId::Bfme1, GameId::Bfme2, GameId::Rotwk, GameId::Aotr, GameId::Conquest];
+    pub const ALL: [GameId; 9] = [
+        GameId::Bfme1,
+        GameId::Bfme2,
+        GameId::Rotwk,
+        GameId::Aotr,
+        GameId::Conquest,
+        GameId::Uaw,
+        GameId::Exigo,
+        GameId::Rol,
+        GameId::Swgb,
+    ];
 
     pub fn slug(self) -> &'static str {
         match self {
@@ -42,6 +62,10 @@ impl GameId {
             GameId::Rotwk => "rotwk",
             GameId::Aotr => "aotr",
             GameId::Conquest => "conquest",
+            GameId::Uaw => "uaw",
+            GameId::Exigo => "exigo",
+            GameId::Rol => "rol",
+            GameId::Swgb => "swgb",
         }
     }
 
@@ -52,6 +76,10 @@ impl GameId {
             "rotwk" | "witchking" | "bfme2ep1" | "ep1" | "lotrbfme2ep1" => Some(GameId::Rotwk),
             "aotr" | "ageofthering" | "age-of-the-ring" | "age of the ring" => Some(GameId::Aotr),
             "conquest" | "lotrc" | "lotr-conquest" => Some(GameId::Conquest),
+            "uaw" | "universeatwar" | "universe-at-war" => Some(GameId::Uaw),
+            "exigo" | "armiesofexigo" | "armies-of-exigo" | "aoe" => Some(GameId::Exigo),
+            "rol" | "riseoflegends" | "rise-of-legends" => Some(GameId::Rol),
+            "swgb" | "galacticbattlegrounds" | "battlegrounds" => Some(GameId::Swgb),
             _ => None,
         }
     }
@@ -63,6 +91,10 @@ impl GameId {
             GameId::Rotwk => "The Rise of the Witch-king",
             GameId::Aotr => "Age of the Ring",
             GameId::Conquest => "The Lord of the Rings: Conquest",
+            GameId::Uaw => "Universe at War: Earth Assault",
+            GameId::Exigo => "Armies of Exigo",
+            GameId::Rol => "Rise of Nations: Rise of Legends",
+            GameId::Swgb => "Star Wars: Galactic Battlegrounds Saga",
         }
     }
 
@@ -73,16 +105,31 @@ impl GameId {
             GameId::Rotwk => "RotWK",
             GameId::Aotr => "AotR",
             GameId::Conquest => "Conquest",
+            GameId::Uaw => "UaW",
+            GameId::Exigo => "Exigo",
+            GameId::Rol => "RoL",
+            GameId::Swgb => "SWGB",
         }
     }
 
-    /// Main executable, matched case-insensitively.
+    /// Main executable (the first of `exes()`), for messages.
     pub fn exe(self) -> &'static str {
+        self.exes()[0]
+    }
+
+    /// Executables that identify the game, in order of preference,
+    /// matched case-insensitively.
+    pub fn exes(self) -> &'static [&'static str] {
         match self {
-            GameId::Bfme1 => "lotrbfme.exe",
-            GameId::Bfme2 => "lotrbfme2.exe",
-            GameId::Rotwk | GameId::Aotr => "lotrbfme2ep1.exe",
-            GameId::Conquest => "Conquest.exe",
+            GameId::Bfme1 => &["lotrbfme.exe"],
+            GameId::Bfme2 => &["lotrbfme2.exe"],
+            GameId::Rotwk | GameId::Aotr => &["lotrbfme2ep1.exe"],
+            GameId::Conquest => &["Conquest.exe"],
+            GameId::Uaw => &["UAWEA.exe"],
+            GameId::Exigo => &["Exigo.exe"],
+            GameId::Rol => &["RiseOfLegends.exe", "rol.exe"],
+            // Saga: Clone Campaigns exe first; the base-game exe has a CD check.
+            GameId::Swgb => &["battlegrounds_x1.exe", "Battlegrounds.exe"],
         }
     }
 
@@ -93,8 +140,8 @@ impl GameId {
             GameId::Bfme1 => "The Battle for Middle-earth",
             GameId::Bfme2 => "The Battle for Middle-earth II",
             GameId::Rotwk | GameId::Aotr => "The Lord of the Rings, The Rise of the Witch-king",
-            // Not used: Conquest's own installer writes its registry.
-            GameId::Conquest => "The Lord of the Rings - Conquest",
+            // Not used: these games' own installers write their registry.
+            _ => "",
         }
     }
 
@@ -105,13 +152,14 @@ impl GameId {
             GameId::Bfme2 => "My The Battle for Middle-earth II Files",
             GameId::Rotwk => "My The Lord of the Rings, The Rise of the Witch-king Files",
             GameId::Aotr => "Age of the Ring",
-            GameId::Conquest => "",
+            _ => "",
         }
     }
 
     pub fn family(self) -> Family {
         match self {
             GameId::Conquest => Family::Lotr,
+            GameId::Uaw | GameId::Exigo | GameId::Rol | GameId::Swgb => Family::Other,
             _ => Family::Bfme,
         }
     }
@@ -120,6 +168,30 @@ impl GameId {
     /// resolution, and supports `-win` / `-mod`.
     pub fn is_sage(self) -> bool {
         self.family() == Family::Bfme
+    }
+
+    /// Steam app id, for copies installed through Steam.
+    pub fn steam_appid(self) -> Option<u32> {
+        match self {
+            GameId::Uaw => Some(10430),
+            GameId::Swgb => Some(356500),
+            _ => None,
+        }
+    }
+
+    /// Run inside a Wine virtual desktop unless the player turns it off.
+    /// SWGB's fullscreen mode shifts mouse clicks under Proton.
+    pub fn default_virtual_desktop(self) -> bool {
+        self == GameId::Swgb
+    }
+
+    /// Folder-name hints required before trusting a generic exe name.
+    fn folder_hints(self) -> &'static [&'static str] {
+        match self {
+            GameId::Conquest => &["conquest", "lotr", "lordoftherings"],
+            GameId::Rol => &["legend"],
+            _ => &[],
+        }
     }
 
     /// Games whose registry carries the player's CD key (`ergc`).
@@ -144,25 +216,26 @@ pub struct FoundGame {
 
 /// Case-insensitive lookup of the game's exe directly inside `dir`.
 pub fn find_exe_in(dir: &Path, game: GameId) -> Option<PathBuf> {
-    let want = game.exe();
-    std::fs::read_dir(dir).ok()?.flatten().find_map(|e| {
-        let name = e.file_name();
-        let name = name.to_string_lossy();
-        (name.eq_ignore_ascii_case(want) && e.path().is_file()).then(|| e.path())
+    let files: Vec<PathBuf> = std::fs::read_dir(dir).ok()?.flatten().map(|e| e.path()).filter(|p| p.is_file()).collect();
+    game.exes().iter().find_map(|want| {
+        files.iter().find(|p| p.file_name().map(|n| n.to_string_lossy().eq_ignore_ascii_case(want)).unwrap_or(false)).cloned()
     })
 }
 
 fn game_for_file(name: &str) -> Option<GameId> {
-    [GameId::Bfme1, GameId::Bfme2, GameId::Rotwk, GameId::Conquest].into_iter().find(|g| name.eq_ignore_ascii_case(g.exe()))
+    // AotR shares RotWK's exe name; the scanner reclassifies it by folder.
+    GameId::ALL.into_iter().filter(|g| *g != GameId::Aotr).find(|g| g.exes().iter().any(|e| name.eq_ignore_ascii_case(e)))
 }
 
-/// `Conquest.exe` is a generic name; only count it when a nearby folder
-/// says Conquest / LOTR.
-fn looks_like_lotr_conquest(dir: &Path) -> bool {
-    dir.ancestors().take(3).any(|a| {
-        let n = squash(&a.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
-        n.contains("conquest") || n.contains("lotr") || n.contains("lordoftherings")
-    })
+/// Generic exe names (Conquest.exe, rol.exe) only count when a nearby
+/// folder name agrees.
+fn folder_agrees(game: GameId, dir: &Path) -> bool {
+    let hints = game.folder_hints();
+    hints.is_empty()
+        || dir.ancestors().take(3).any(|a| {
+            let n = squash(&a.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
+            hints.iter().any(|h| n.contains(h))
+        })
 }
 
 fn squash(s: &str) -> String {
@@ -226,7 +299,7 @@ pub fn scan(roots: &[PathBuf], max_depth: usize) -> Vec<FoundGame> {
             }
             let Some(mut game) = game_for_file(&entry.file_name().to_string_lossy()) else { continue };
             let Some(dir) = entry.path().parent() else { continue };
-            if game == GameId::Conquest && !looks_like_lotr_conquest(dir) {
+            if !folder_agrees(game, dir) {
                 continue;
             }
             // Inside an Age of the Ring install: its own exe is AotR, and the
@@ -336,5 +409,27 @@ mod tests {
         std::fs::write(real.join("ConquestServer.exe"), b"").unwrap();
         let found = scan(&[t.path().join("Games")], 6);
         assert_eq!(found, vec![FoundGame { game: GameId::Conquest, dir: real }]);
+    }
+
+    #[test]
+    fn other_games_detected() {
+        let t = tempfile::tempdir().unwrap();
+        let g = t.path().join("Games");
+        let swgb = g.join("steamapps/common/Star Wars Galactic Battlegrounds Saga/Game");
+        let uaw = g.join("Universe at War Earth Assault");
+        let exigo = g.join("Armies of Exigo/Exigo Files");
+        let rol = g.join("Rise of Legends");
+        let not_rol = g.join("Tools");
+        for (d, exe) in [(&swgb, "Battlegrounds.exe"), (&swgb, "battlegrounds_x1.exe"), (&uaw, "UAWEA.exe"), (&uaw, "LaunchUAW.exe"), (&exigo, "Exigo.exe"), (&rol, "RiseOfLegends.exe"), (&not_rol, "rol.exe")] {
+            std::fs::create_dir_all(d).unwrap();
+            std::fs::write(d.join(exe), b"").unwrap();
+        }
+        let found = scan(&[g], 8);
+        let pairs: Vec<_> = found.iter().map(|f| (f.game, f.dir.clone())).collect();
+        assert_eq!(pairs, vec![(GameId::Uaw, uaw), (GameId::Exigo, exigo), (GameId::Rol, rol), (GameId::Swgb, swgb.clone())]);
+        // The Clone Campaigns exe wins over the base one.
+        assert!(find_exe_in(&swgb, GameId::Swgb).unwrap().ends_with("battlegrounds_x1.exe"));
+        assert_eq!(GameId::Swgb.family(), Family::Other);
+        assert_eq!(GameId::parse("swgb").unwrap().steam_appid(), Some(356500));
     }
 }

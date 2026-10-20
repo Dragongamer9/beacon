@@ -46,6 +46,11 @@ pub struct GameConfig {
     pub extra_args: String,
     /// Extra environment variables for the runner (e.g. DXVK_HUD=fps).
     pub env: BTreeMap<String, String>,
+    /// Run inside a Wine virtual desktop (`None` = the game's default).
+    /// The desktop size is `resolution`, or 1280x1024.
+    pub virtual_desktop: Option<bool>,
+    /// For Steam copies: hand the launch to Steam instead of Beacon's prefix.
+    pub via_steam: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
