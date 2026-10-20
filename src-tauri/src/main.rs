@@ -347,7 +347,41 @@ fn open_log(state: State<AppState>, game: GameId) -> CmdResult<()> {
     open_path(log.to_string_lossy().into_owned())
 }
 
+/// The `beacon` command-line tool through the app's own binary, for the AppImage (which has a single entry
+/// point): `Beacon.AppImage --cli <args>`, or the AppImage started through a symlink named `beacon` (the
+/// AppImage runtime passes the name it was started as in ARGV0). Runs the `beacon` binary installed next to
+/// this one and doesn't return. The .deb and .rpm have /usr/bin/beacon and don't need this, but
+/// `beacon-app --cli …` works there too.
+#[cfg(unix)]
+fn run_cli_if_asked() {
+    use std::ffi::{OsStr, OsString};
+    use std::os::unix::process::CommandExt;
+    use std::path::Path;
+
+    let args: Vec<OsString> = std::env::args_os().collect();
+    let Ok(exe) = std::env::current_exe() else { return };
+    let named_beacon = |s: &OsStr| Path::new(s).file_name() == Some(OsStr::new("beacon"));
+    // ARGV0 is inherited by child processes, so it only counts inside our own AppImage.
+    let in_our_appimage = std::env::var_os("APPDIR").is_some_and(|d| exe.starts_with(d));
+    let rest: &[OsString] = if args.get(1).is_some_and(|a| a == "--cli") {
+        args.get(2..).unwrap_or(&[])
+    } else if (in_our_appimage && std::env::var_os("ARGV0").is_some_and(|a| named_beacon(a.as_os_str())))
+        || args.first().is_some_and(|a| named_beacon(a.as_os_str()))
+    {
+        args.get(1..).unwrap_or(&[])
+    } else {
+        return;
+    };
+    let Some(cli) = exe.parent().map(|d| d.join("beacon")) else { return };
+    let err = std::process::Command::new(&cli).args(rest).exec();
+    eprintln!("beacon: couldn't start {}: {err}", cli.display());
+    std::process::exit(127);
+}
+
 fn main() {
+    #[cfg(unix)]
+    run_cli_if_asked();
+
     let mut beacon = Beacon::load().expect("loading Beacon config");
     // First run: look for games straight away.
     if beacon.config.games.is_empty() {
