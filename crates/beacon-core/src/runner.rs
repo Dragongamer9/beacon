@@ -1,5 +1,8 @@
 //! Finding Wine, Proton and umu-launcher on the system, and turning
 //! "run this exe in that prefix" into a concrete command.
+//!
+//! On Windows there's nothing to find: the games run directly, and the runner
+//! list is the single "Windows (native)" entry (`kind: "native"`).
 
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
@@ -14,6 +17,8 @@ pub enum RunnerKind {
     Proton,
     /// A plain `wine` binary.
     Wine,
+    /// Windows: the exe runs directly, no prefix.
+    Native,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -33,7 +38,18 @@ pub struct RunnerSet {
     pub umu: Option<PathBuf>,
 }
 
+/// Id of the Windows runner.
+pub const NATIVE_ID: &str = "native";
+
 impl RunnerSet {
+    /// Windows: one runner that starts the exe itself.
+    pub fn native() -> RunnerSet {
+        RunnerSet {
+            runners: vec![Runner { id: NATIVE_ID.into(), name: "Windows (native)".into(), kind: RunnerKind::Native, path: PathBuf::new() }],
+            umu: None,
+        }
+    }
+
     pub fn get(&self, id: &str) -> Option<&Runner> {
         self.runners.iter().find(|r| r.id == id)
     }
@@ -90,9 +106,46 @@ fn quote(s: &str) -> String {
     }
 }
 
-/// Look up a binary on a PATH-style string.
+/// Look up a binary on a PATH-style string (on Windows also `<bin>.exe`).
 pub fn which_in(bin: &str, path_env: &str) -> Option<PathBuf> {
-    std::env::split_paths(path_env).map(|d| d.join(bin)).find(|p| p.is_file())
+    let names: Vec<String> = if cfg!(windows) { vec![format!("{bin}.exe"), bin.to_string()] } else { vec![bin.to_string()] };
+    std::env::split_paths(path_env).flat_map(|d| names.iter().map(move |n| d.join(n)).collect::<Vec<_>>()).find(|p| p.is_file())
+}
+
+/// Join arguments into one Windows command line the way `CommandLineToArgvW`
+/// (and the MSVC runtime) splits it again: quotes around arguments with spaces,
+/// tabs or quotes, backslashes doubled only before a quote.
+pub fn windows_command_line(args: &[String]) -> String {
+    let mut out = String::new();
+    for (i, a) in args.iter().enumerate() {
+        if i > 0 {
+            out.push(' ');
+        }
+        if !a.is_empty() && !a.chars().any(|c| c == ' ' || c == '\t' || c == '"') {
+            out.push_str(a);
+            continue;
+        }
+        out.push('"');
+        let mut backslashes = 0usize;
+        for c in a.chars() {
+            match c {
+                '\\' => backslashes += 1,
+                '"' => {
+                    out.extend(std::iter::repeat('\\').take(backslashes * 2 + 1));
+                    out.push('"');
+                    backslashes = 0;
+                }
+                c => {
+                    out.extend(std::iter::repeat('\\').take(backslashes));
+                    out.push(c);
+                    backslashes = 0;
+                }
+            }
+        }
+        out.extend(std::iter::repeat('\\').take(backslashes * 2));
+        out.push('"');
+    }
+    out
 }
 
 /// Compare "GE-Proton10-9" vs "GE-Proton10-10" the way a human would.
@@ -215,6 +268,10 @@ pub fn command_for(
     let program;
 
     match runner.kind {
+        RunnerKind::Native => {
+            // No prefix: `target` is the exe itself.
+            program = PathBuf::from(target);
+        }
         RunnerKind::Wine => {
             program = runner.path.clone();
             env.push(("WINEPREFIX".into(), pfx));
@@ -299,6 +356,30 @@ mod tests {
         assert!(c.env.contains(&("STEAM_COMPAT_DATA_PATH".into(), "/data/pfx/bfme2".into())));
     }
 
+    #[test]
+    fn native_runs_the_exe_itself() {
+        let set = RunnerSet::native();
+        let r = set.best().unwrap();
+        assert_eq!((r.id.as_str(), r.kind), (NATIVE_ID, RunnerKind::Native));
+        let c = command_for(r, None, Path::new("/h"), Path::new("/d/rotwk"), "/g/lotrbfme2ep1.exe", &["-win".into()], Path::new("/g"));
+        assert_eq!(c.program, PathBuf::from("/g/lotrbfme2ep1.exe"));
+        assert_eq!(c.args, vec!["-win"]);
+        assert!(c.env.is_empty(), "no Wine variables: {:?}", c.env);
+        assert_eq!(serde_json::to_value(r).unwrap()["kind"], "native");
+    }
+
+    #[test]
+    fn windows_command_lines() {
+        let a = |v: &[&str]| windows_command_line(&v.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        assert_eq!(a(&["-mod", "C:\\My Mods\\Edain"]), r#"-mod "C:\My Mods\Edain""#);
+        assert_eq!(a(&["-win", ""]), r#"-win """#);
+        assert_eq!(a(&[r#"say "hi""#]), r#""say \"hi\"""#);
+        assert_eq!(a(&[r"C:\dir with space\"]), r#""C:\dir with space\\""#);
+        assert_eq!(a(&[r"C:\plain\path"]), r"C:\plain\path");
+    }
+
+    // Compares a joined path as a string (`/d/rotwk/pfx`).
+    #[cfg(unix)]
     #[test]
     fn proton_with_umu_sets_protonpath() {
         let r = Runner { id: "p".into(), name: "GE".into(), kind: RunnerKind::Proton, path: "/opt/ge".into() };

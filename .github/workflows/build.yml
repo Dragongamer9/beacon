@@ -1,8 +1,10 @@
-# Tests Beacon and builds its Linux packages: an AppImage, a .deb, an .rpm and a plain tar.gz. Each one has
-# Beacon's window (beacon-app) and its command-line tool (beacon). A new version on main (the version in
-# tauri.conf.json that has no release yet) is released: the tag v<version> and a GitHub Release, also under fixed
-# names so releases/latest/download/<name> links keep working. A pushed v* tag works the same way.
-# Failures are reported as annotations with the last lines of output.
+# Tests Beacon and builds its packages. Linux (build-linux): an AppImage, a .deb, an .rpm and a plain tar.gz.
+# Windows (build-windows): an NSIS installer, an MSI and a portable zip. Each one has Beacon's window
+# (beacon-app / beacon-app.exe) and its command-line tool (beacon / beacon.exe). A new version on main (the version
+# in tauri.conf.json that has no release yet) is released by the release job once both builds pass: the tag
+# v<version> and one GitHub Release with every package, also under fixed names so releases/latest/download/<name>
+# links keep working. A pushed v* tag works the same way. Failures are reported as annotations with the last lines
+# of output.
 name: Build
 
 on:
@@ -23,10 +25,12 @@ env:
   CARGO_TERM_COLOR: never
 
 jobs:
-  build:
+  build-linux:
     # 22.04 for an older glibc (2.35), so the AppImage and the binaries run on more systems.
     runs-on: ubuntu-22.04
     timeout-minutes: 60
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
@@ -142,13 +146,9 @@ jobs:
           done
           tar -C "$t" --owner=0 --group=0 -czf dist/beacon-x86_64-linux.tar.gz bin share
 
-          # Fixed names for releases/latest/download/… links.
-          cp "dist/Beacon-$V-x86_64.AppImage" dist/Beacon-x86_64.AppImage
-          cp "dist/beacon_${V}_amd64.deb" dist/beacon_amd64.deb
-          cp "dist/beacon-$V-1.x86_64.rpm" dist/beacon.x86_64.rpm
-
-          (cd dist && sha256sum -- * > SHA256SUMS)
-          cat dist/SHA256SUMS
+          # The fixed-name copies (releases/latest/download/…) are made by the release job.
+          (cd dist && sha256sum -- * > SHA256SUMS-linux)
+          cat dist/SHA256SUMS-linux
           ls -l dist
 
       - name: Check what's in each package
@@ -195,21 +195,137 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: beacon-${{ steps.version.outputs.version }}-linux-x86_64
-          path: |
-            dist/*
-            !dist/Beacon-x86_64.AppImage
-            !dist/beacon_amd64.deb
-            !dist/beacon.x86_64.rpm
+          path: dist/*
           if-no-files-found: error
 
-      - name: GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'push' && github.ref == 'refs/heads/main')
-        env:
-          GH_TOKEN: ${{ github.token }}
-          V: ${{ steps.version.outputs.version }}
+  build-windows:
+    runs-on: windows-latest
+    timeout-minutes: 75
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Version
+        id: version
+        run: |
+          v=$(node -p 'require("./src-tauri/tauri.conf.json").version')
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "::notice title=Version (Windows)::$v"
+
+      - name: UI fonts
         run: |
           set -o pipefail
-          log="$RUNNER_TEMP/release.log"
+          if ! ./scripts/fetch-fonts.sh > "$RUNNER_TEMP/fonts.log" 2>&1; then
+            echo "::error title=Fetching the UI fonts failed (Windows)::$(tail -20 "$RUNNER_TEMP/fonts.log" | tr '\n' '|' | cut -c1-3900)"
+            exit 1
+          fi
+          ls -l ui/fonts
+
+      - name: Test (cargo test --workspace)
+        run: |
+          set -o pipefail
+          log="$RUNNER_TEMP/test.log"
+          if ! cargo test --workspace 2>&1 | tee "$log"; then
+            echo "::error title=cargo test failed (Windows)::$( (grep -E -A8 '^(error|---- |thread .* panicked)' "$log" | head -60; echo ===; tail -25 "$log") | tr '\n' '|' | cut -c1-3900)"
+            exit 1
+          fi
+          echo "::notice title=Tests (Windows)::$(grep -E '^test result' "$log" | tr '\n' ' ' | cut -c1-3900)"
+
+      - name: Build the beacon CLI
+        run: |
+          set -o pipefail
+          log="$RUNNER_TEMP/cli.log"
+          if ! cargo build --release -p beacon-cli 2>&1 | tee "$log"; then
+            echo "::error title=beacon.exe build failed::$( (grep -E -A8 '^error' "$log" | head -60; echo ===; tail -20 "$log") | tr '\n' '|' | cut -c1-3900)"
+            exit 1
+          fi
+          out=$(./target/release/beacon.exe --version 2>&1) || { echo "::error title=beacon.exe --version failed::$(echo "$out" | tail -15 | tr '\n' '|')"; exit 1; }
+          echo "::notice title=beacon.exe::$out"
+
+      - name: Build the app and its installers (tauri build)
+        working-directory: src-tauri
+        run: |
+          set -o pipefail
+          log="$RUNNER_TEMP/tauri.log"
+          # tauri.windows.conf.json is merged in here: it puts beacon.exe next to beacon-app.exe in both installers.
+          if ! npx --yes @tauri-apps/cli@2 build --verbose --bundles nsis,msi 2>&1 | tee "$log"; then
+            echo "::error title=tauri build failed (Windows)::$( (grep -E -i -A6 '^(error|\s*error)|failed' "$log" | head -60; echo ===; tail -40 "$log") | tr '\n' '|' | cut -c1-3900)"
+            exit 1
+          fi
+          ls -l ../target/release/bundle/*/
+
+      - name: Collect the packages
+        env:
+          V: ${{ steps.version.outputs.version }}
+        run: |
+          set -eu
+          b=target/release/bundle
+          for g in "$b/nsis/*-setup.exe" "$b/msi/*.msi"; do
+            n=$(ls $g 2>/dev/null | wc -l)
+            if [ "$n" != 1 ]; then
+              echo "::error title=Package missing (Windows)::expected one $g, found $n: $(ls $b/*/ 2>&1 | tr '\n' ' ' | cut -c1-3500)"
+              exit 1
+            fi
+          done
+          for f in beacon.exe beacon-app.exe; do
+            [ -f "target/release/$f" ] || { echo "::error title=$f missing::target/release/$f wasn't built"; exit 1; }
+          done
+          mkdir -p dist
+          cp $b/nsis/*-setup.exe "dist/Beacon-$V-x64-setup.exe"
+          cp $b/msi/*.msi "dist/Beacon-$V-x64.msi"
+          # Portable: the two exes, run from anywhere (Hearth's Windows edition looks for exactly these names).
+          (cd target/release && 7z a -tzip -bd "$GITHUB_WORKSPACE/dist/beacon-windows-x64.zip" beacon.exe beacon-app.exe > "$RUNNER_TEMP/zip.log") \
+            || { echo "::error title=Zipping failed::$(tail -20 "$RUNNER_TEMP/zip.log" | tr '\n' '|')"; exit 1; }
+          (cd dist && sha256sum -- * > SHA256SUMS-windows)
+          cat dist/SHA256SUMS-windows
+          ls -l dist
+
+      - name: Check what's in each package
+        env:
+          V: ${{ steps.version.outputs.version }}
+        run: |
+          set -u
+          bad=0
+          zl=$(7z l -ba dist/beacon-windows-x64.zip 2>&1 | tr -d '\r')
+          for f in beacon.exe beacon-app.exe; do
+            echo "$zl" | grep -qi " $f\$" || { echo "::error title=zip: $f missing::$(echo "$zl" | tr '\n' '|' | cut -c1-3500)"; bad=1; }
+          done
+          # 7-Zip opens NSIS installers: the installed files must include both exes.
+          nl=$(7z l -ba "dist/Beacon-$V-x64-setup.exe" 2>&1 | tr -d '\r')
+          for f in beacon.exe beacon-app.exe; do
+            echo "$nl" | grep -qi "$f" || echo "::warning title=NSIS installer: $f not seen::$(echo "$nl" | tr '\n' '|' | cut -c1-3500)"
+          done
+          echo "::notice title=Sizes (Windows)::$(cd dist && ls -sh "Beacon-$V-x64-setup.exe" "Beacon-$V-x64.msi" beacon-windows-x64.zip | tr '\n' ' ')"
+          exit $bad
+
+      - name: Upload the packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: beacon-${{ steps.version.outputs.version }}-windows-x64
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    # Only from a push to main or a v* tag, as before, and only when both builds passed.
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    needs: [build-linux, build-windows]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check whether this version is new
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          V: ${{ needs.build-linux.outputs.version }}
+        run: |
           if [ "$GITHUB_REF_TYPE" = tag ]; then
             tag="$GITHUB_REF_NAME"
           else
@@ -217,17 +333,53 @@ jobs:
             tag="v$V"
             if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
               echo "::notice title=No new release::Beacon $V is already released; bump the version in tauri.conf.json and Cargo.toml to release."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
               exit 0
             fi
           fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - name: Download the packages
+        if: steps.check.outputs.skip != 'true'
+        uses: actions/download-artifact@v4
+        with:
+          pattern: beacon-${{ needs.build-linux.outputs.version }}-*
+          path: dist
+          merge-multiple: true
+
+      - name: GitHub Release
+        if: steps.check.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          V: ${{ needs.build-linux.outputs.version }}
+          TAG: ${{ steps.check.outputs.tag }}
+        run: |
+          set -o pipefail
+          log="$RUNNER_TEMP/release.log"
+          cd dist
+          for f in "Beacon-$V-x86_64.AppImage" "beacon_${V}_amd64.deb" "beacon-$V-1.x86_64.rpm" beacon-x86_64-linux.tar.gz \
+                   "Beacon-$V-x64-setup.exe" "Beacon-$V-x64.msi" beacon-windows-x64.zip; do
+            [ -f "$f" ] || { echo "::error title=Release file missing::$f isn't in the build artifacts: $(ls | tr '\n' ' ')"; exit 1; }
+          done
+          # Fixed names for releases/latest/download/… links.
+          cp "Beacon-$V-x86_64.AppImage" Beacon-x86_64.AppImage
+          cp "beacon_${V}_amd64.deb" beacon_amd64.deb
+          cp "beacon-$V-1.x86_64.rpm" beacon.x86_64.rpm
+          cp "Beacon-$V-x64-setup.exe" Beacon-x64-setup.exe
+          cp "Beacon-$V-x64.msi" Beacon-x64.msi
+          chmod +x "Beacon-$V-x86_64.AppImage" Beacon-x86_64.AppImage
+          rm -f SHA256SUMS-linux SHA256SUMS-windows
+          sha256sum -- * > SHA256SUMS
+          cat SHA256SUMS
           {
-            if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-              gh release upload "$tag" dist/* --clobber --repo "$GITHUB_REPOSITORY"
+            if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              gh release upload "$TAG" * --clobber --repo "$GITHUB_REPOSITORY"
             else
               # A full release, not a pre-release: releases/latest only points at full releases.
               verify=""; [ "$GITHUB_REF_TYPE" = tag ] && verify="--verify-tag"
-              gh release create "$tag" dist/* --repo "$GITHUB_REPOSITORY" $verify --target "$GITHUB_SHA" \
+              gh release create "$TAG" * --repo "$GITHUB_REPOSITORY" $verify --target "$GITHUB_SHA" \
                 --title "Beacon $V" --generate-notes
             fi
           } > "$log" 2>&1 || { echo "::error title=Release failed::$(tail -20 "$log" | tr '\n' '|' | cut -c1-3900)"; exit 1; }
-          echo "::notice title=Released::Beacon $V: https://github.com/$GITHUB_REPOSITORY/releases/tag/$tag"
+          echo "::notice title=Released::Beacon $V: https://github.com/$GITHUB_REPOSITORY/releases/tag/$TAG"

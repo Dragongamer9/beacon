@@ -145,8 +145,14 @@ pub fn locate(e: &Edition, game_dir: &Path) -> Option<Option<PathBuf>> {
 /// `MODPATH=` value for a mod folder: relative to the game folder when
 /// inside it (what the engine expects), otherwise a Wine path.
 pub fn modpath_arg(game_dir: &Path, mod_dir: &Path) -> String {
+    modpath_arg_for(game_dir, mod_dir, false)
+}
+
+/// `modpath_arg`, with `native` (Windows) giving a plain path for a folder outside the game.
+pub fn modpath_arg_for(game_dir: &Path, mod_dir: &Path, native: bool) -> String {
     match mod_dir.strip_prefix(game_dir) {
         Ok(rel) => format!("MODPATH={}", rel.to_string_lossy().replace('/', "\\")),
+        Err(_) if native => format!("MODPATH={}", mod_dir.to_string_lossy()),
         Err(_) => format!("MODPATH={}", crate::registry::wine_path(mod_dir, false)),
     }
 }
@@ -271,6 +277,8 @@ mod tests {
         assert_eq!(locate(&uaw[2], &g), Some(None), "vanilla is always there");
     }
 
+    // Needs a case-sensitive file system to tell `DATA` from `Data`.
+    #[cfg(unix)]
     #[test]
     fn merge_is_case_insensitive_and_backs_up() {
         let t = tempfile::tempdir().unwrap();

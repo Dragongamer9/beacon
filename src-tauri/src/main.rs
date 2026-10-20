@@ -1,10 +1,14 @@
 //! Beacon desktop app: a thin Tauri shell over beacon-core.
 
+// Windows release builds: no console window behind the app.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use beacon_core::{
     games::GameId,
+    media,
     mods::ModEntry,
-    runner::Runner,
-    Beacon, CatalogItem, Community, GameStatus, Resolution,
+    runner::{Command, Runner},
+    workshop, Beacon, CatalogItem, Community, GameStatus, Resolution,
 };
 use serde::Serialize;
 use std::collections::BTreeSet;
@@ -34,6 +38,10 @@ struct Snapshot {
     mods_dir: PathBuf,
     data_dir: PathBuf,
     running: Vec<GameId>,
+    /// Windows: games run directly (no Wine prefixes or runners to pick).
+    native: bool,
+    /// Where to get the BFME All-in-One launcher.
+    aio_url: &'static str,
 }
 
 fn snapshot(state: &AppState) -> Snapshot {
@@ -47,6 +55,8 @@ fn snapshot(state: &AppState) -> Snapshot {
         mods_dir: b.paths.mods_dir(),
         data_dir: b.paths.data_dir.clone(),
         running: state.running.lock().unwrap().iter().copied().collect(),
+        native: b.native,
+        aio_url: beacon_core::aio::LAUNCHER_URL,
     }
 }
 
@@ -68,8 +78,7 @@ fn get_state(state: State<AppState>) -> Snapshot {
 #[tauri::command]
 fn scan(state: State<AppState>) -> CmdResult<Snapshot> {
     mutate(&state, |b| {
-        let path_env = std::env::var("PATH").unwrap_or_default();
-        b.runners = beacon_core::runner::discover(&b.paths.home, &path_env);
+        b.refresh_runners();
         b.scan(&[]);
         Ok(())
     })
@@ -192,14 +201,71 @@ fn find_mods(state: State<AppState>) -> CmdResult<(Snapshot, usize)> {
     Ok((snap, added))
 }
 
+/// Hand a link or a path to the desktop: xdg-open on Linux, Explorer on Windows.
+fn system_open(target: &std::ffi::OsStr) -> std::io::Result<()> {
+    let opener = if cfg!(windows) { "explorer" } else { "xdg-open" };
+    std::process::Command::new(opener).arg(target).spawn().map(|_| ())
+}
+
 /// Open a mod's web page in the default browser.
 #[tauri::command]
 fn open_url(url: String) -> CmdResult<()> {
-    if !url.starts_with("https://") {
+    if !url.starts_with("https://") || url.chars().any(|c| c.is_whitespace() || c.is_control()) {
         return Err("only https links can be opened".into());
     }
-    std::process::Command::new("xdg-open").arg(&url).spawn().map_err(err)?;
-    Ok(())
+    system_open(std::ffi::OsStr::new(&url)).map_err(err)
+}
+
+/// The BFME workshop's fan content for a game (network, so off the main thread).
+#[derive(Serialize)]
+struct WorkshopPage {
+    items: Vec<workshop::Item>,
+    hidden: usize,
+    source: &'static str,
+}
+
+#[tauri::command]
+async fn workshop_list(app: AppHandle, game: GameId, search: Option<String>, page: Option<u32>) -> CmdResult<WorkshopPage> {
+    let b = app.state::<AppState>().beacon.lock().unwrap().clone();
+    let (items, hidden) = tauri::async_runtime::spawn_blocking(move || {
+        b.workshop_list(&workshop::Net::new(), game, search.as_deref().unwrap_or(""), page.unwrap_or(0))
+    })
+    .await
+    .map_err(err)?
+    .map_err(|e| format!("{e:#}"))?;
+    Ok(WorkshopPage { items, hidden, source: workshop::SITE })
+}
+
+#[derive(Clone, Serialize)]
+struct WorkshopProgress {
+    game: GameId,
+    id: String,
+    pct: Option<u8>,
+    text: String,
+}
+
+/// Download a workshop entry into the mods library; progress arrives as `workshop-progress` events.
+#[tauri::command]
+async fn workshop_install(app: AppHandle, game: GameId, id: String) -> CmdResult<(Snapshot, String)> {
+    let b = app.state::<AppState>().beacon.lock().unwrap().clone();
+    let app2 = app.clone();
+    let id2 = id.clone();
+    let done = tauri::async_runtime::spawn_blocking(move || {
+        b.workshop_install(&workshop::Net::new(), game, &id2, &mut |pct: Option<u8>, text: &str| {
+            let _ = app2.emit("workshop-progress", WorkshopProgress { game, id: id2.clone(), pct, text: text.to_string() });
+        })
+    })
+    .await
+    .map_err(err)?
+    .map_err(|e| format!("{e:#}"))?;
+    let state = app.state::<AppState>();
+    Ok((snapshot(&state), format!("{} {} installed", done.0.name, done.0.version)))
+}
+
+/// Games the BFME All-in-One launcher manages, and where to get it.
+#[tauri::command]
+fn aio_info(state: State<AppState>) -> serde_json::Value {
+    beacon_core::report::aio(&state.beacon.lock().unwrap())
 }
 
 #[tauri::command]
@@ -235,32 +301,59 @@ fn emit(app: &AppHandle, game: GameId, phase: &'static str, message: Option<Stri
     let _ = app.emit("game-event", GameEvent { game, phase, message });
 }
 
-/// Start a game (or `installer`, an exe to run inside the game's prefix).
+/// What `start` runs.
+enum Job {
+    /// The game (or its selected mod's launcher).
+    Launch(Option<String>),
+    /// An installer or patch exe, for a community step or not.
+    Installer(PathBuf, Option<String>),
+    /// The player's own copy: an installer, a disc folder or a disc image.
+    FromCopy(PathBuf),
+}
+
+/// Start a game, an installer, or an install from the player's own copy.
 /// Progress arrives as `game-event`s; the call itself returns at once.
-fn start(app: AppHandle, state: &AppState, game: GameId, mod_id: Option<String>, installer: Option<PathBuf>, step: Option<String>) -> CmdResult<()> {
+fn start(app: AppHandle, state: &AppState, game: GameId, job: Job) -> CmdResult<()> {
     let beacon = state.beacon.lock().unwrap().clone();
-    // Fail fast on anything we can check without running Wine.
-    let cmd = match &installer {
-        Some(exe) => beacon.run_in_prefix_command(game, exe),
-        None => beacon.launch_command(game, mod_id.as_deref()),
-    }
-    .map_err(err)?;
+    // Fail fast on anything we can check without running Wine (or the installer).
+    let cmd: Option<Command> = match &job {
+        Job::Installer(exe, _) => Some(beacon.run_in_prefix_command(game, exe).map_err(err)?),
+        Job::Launch(mod_id) => Some(beacon.launch_command(game, mod_id.as_deref()).map_err(err)?),
+        Job::FromCopy(src) => {
+            media::classify(src).map_err(|e| format!("{e:#}"))?;
+            None
+        }
+    };
+    let installer = !matches!(job, Job::Launch(_));
+    let step = match &job {
+        Job::Installer(_, step) => step.clone(),
+        _ => None,
+    };
     if !state.running.lock().unwrap().insert(game) {
         return Err(format!("{} is already running", game.short()));
     }
 
     std::thread::spawn(move || {
         emit(&app, game, "preparing", None);
+        // A disc image is extracted first, then its setup found.
+        let cmd = match (cmd, &job) {
+            (Some(c), _) => Ok(c),
+            (None, Job::FromCopy(src)) => beacon
+                .prepare_install(game, src, &mut |t: &str| emit(&app, game, "preparing", Some(t.to_string())))
+                .and_then(|p| beacon.run_in_prefix_command(game, &p.setup)),
+            (None, _) => Err(anyhow::anyhow!("nothing to run")),
+        };
         // An installer may be installing the game itself: its prefix can't get the game's registry keys yet.
-        let prepared = if installer.is_some() { beacon.prepare_prefix(game) } else { beacon.setup(game, false) };
-        let started = prepared
-            .and_then(|_| beacon.apply_options(game))
-            .and_then(|_| beacon.spawn_logged(game, &cmd));
+        let started = cmd.and_then(|cmd| {
+            (if installer { beacon.prepare_prefix(game) } else { beacon.setup(game, false) })
+                .and_then(|_| beacon.apply_options(game))
+                .and_then(|_| beacon.spawn_logged(game, &cmd))
+        });
         match started {
             Ok(mut child) => {
                 emit(&app, game, "running", None);
                 let window = app.get_webview_window("main");
-                if installer.is_none() {
+                if !installer {
                     if let Some(w) = &window {
                         let _ = w.minimize();
                     }
@@ -270,7 +363,7 @@ fn start(app: AppHandle, state: &AppState, game: GameId, mod_id: Option<String>,
                     let _ = w.unminimize();
                     let _ = w.set_focus();
                 }
-                if installer.is_some() {
+                if installer {
                     // A finished installer may have just put a game in the prefix.
                     let state = app.state::<AppState>();
                     let mut b = state.beacon.lock().unwrap();
@@ -298,12 +391,18 @@ fn start(app: AppHandle, state: &AppState, game: GameId, mod_id: Option<String>,
 
 #[tauri::command]
 fn launch(app: AppHandle, state: State<AppState>, game: GameId, mod_id: Option<String>) -> CmdResult<()> {
-    start(app.clone(), &state, game, mod_id, None, None)
+    start(app.clone(), &state, game, Job::Launch(mod_id))
 }
 
 #[tauri::command]
 fn run_installer(app: AppHandle, state: State<AppState>, game: GameId, path: String, step: Option<String>) -> CmdResult<()> {
-    start(app.clone(), &state, game, None, Some(PathBuf::from(path)), step)
+    start(app.clone(), &state, game, Job::Installer(PathBuf::from(path), step))
+}
+
+/// Install a game from the player's own copy: installer .exe, disc image (.iso) or disc folder.
+#[tauri::command]
+fn install_from(app: AppHandle, state: State<AppState>, game: GameId, path: String) -> CmdResult<()> {
+    start(app.clone(), &state, game, Job::FromCopy(PathBuf::from(path)))
 }
 
 #[tauri::command]
@@ -323,6 +422,7 @@ async fn pick_file(app: AppHandle, kind: String) -> Option<String> {
     d = match kind.as_str() {
         "mod" => d.add_filter("Mod (.big or launcher .exe)", &["big", "BIG", "exe", "EXE"]),
         "download" => d.add_filter("Download (archive, .exe or .dll)", &["zip", "ZIP", "7z", "rar", "RAR", "tar", "gz", "xz", "exe", "EXE", "dll", "DLL"]),
+        "copy" => d.add_filter("Your copy (installer .exe or disc image .iso)", &["exe", "EXE", "msi", "MSI", "iso", "ISO"]),
         _ => d.add_filter("Windows program", &["exe", "EXE", "msi", "MSI"]),
     };
     d.blocking_pick_file().and_then(|p| p.into_path().ok()).map(|p| p.to_string_lossy().into_owned())
@@ -335,8 +435,7 @@ fn open_path(path: String) -> CmdResult<()> {
     if !p.exists() {
         std::fs::create_dir_all(&p).map_err(err)?;
     }
-    std::process::Command::new("xdg-open").arg(&p).spawn().map_err(err)?;
-    Ok(())
+    system_open(p.as_os_str()).map_err(err)
 }
 
 #[tauri::command]
@@ -422,6 +521,10 @@ fn main() {
             select_mod,
             launch,
             run_installer,
+            install_from,
+            workshop_list,
+            workshop_install,
+            aio_info,
             launch_preview,
             pick_folder,
             pick_file,

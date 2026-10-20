@@ -1,18 +1,18 @@
-//! `beacon` – headless launcher for BFME, BFME II and RotWK.
+//! `beacon` – headless launcher for BFME, BFME II and RotWK (Linux and Windows).
 //! Handy over SSH, in scripts, and for Hearth to call into.
 //!
 //! Every command takes `--json` for machine-readable output (see `beacon_core::report` and the README's
 //! "For Hearth / scripting"). Without it, the output is for people, as before.
 
 use anyhow::Result;
-use beacon_core::{editions, games::GameId, mods::ModKind, report, Beacon, Level, Resolution};
+use beacon_core::{aio, editions, games::GameId, media, mods::ModKind, report, workshop, Beacon, Level, Resolution};
 use clap::{Parser, Subcommand};
 use serde_json::{json, Value};
 use std::io::{BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
-#[command(name = "beacon", version, about = "Linux launcher for BFME, AotR, LOTR: Conquest and other classic games")]
+#[command(name = "beacon", version, about = "Launcher for BFME, AotR, LOTR: Conquest and other classic games (Linux and Windows)")]
 struct Cli {
     /// Machine-readable output: JSON, with progress lines for long jobs.
     #[arg(long, global = true)]
@@ -120,6 +120,28 @@ enum Cmd {
     },
     /// Show where config, prefixes, mods and logs live.
     Paths,
+    /// Install a game from your own copy: its installer (.exe), a disc image (.iso) or the disc's folder.
+    InstallFrom { game: String, path: PathBuf },
+    /// Fan-made mods, maps and patches from the BFME workshop (BFME, BFME II, RotWK).
+    Workshop {
+        game: String,
+        /// Only entries matching these words.
+        #[arg(long, default_value = "")]
+        search: String,
+        /// Page of results, from 0.
+        #[arg(long, default_value_t = 0)]
+        page: u32,
+    },
+    /// Download a workshop entry (fan content only) into Beacon's mods.
+    WorkshopInstall {
+        game: String,
+        id: String,
+        /// Also make it the mod the game starts with.
+        #[arg(long)]
+        select: bool,
+    },
+    /// Games the BFME All-in-One launcher installed, and where to get the launcher.
+    Aio,
 }
 
 // ---------------------------------------------------------------- errors and output
@@ -642,6 +664,105 @@ fn run(ctx: &Ctx, b: &mut Beacon, cmd: Cmd) -> Result<Value> {
             }
             v
         }
+        Cmd::InstallFrom { game: g, path } => {
+            let g = game(&g)?;
+            media::classify(&path).map_err(|e| usage(format!("{e:#}")))?;
+            ctx.progress(Some(2), "Checking what you picked");
+            let prep = b.prepare_install(g, &path, &mut |t: &str| ctx.progress(None, t))?;
+            ctx.progress(Some(10), if b.native { "Getting the installer ready" } else { "Preparing the game's Wine prefix" });
+            b.prepare_prefix(g)?;
+            let cmd = b.run_in_prefix_command(g, &prep.setup)?;
+            ctx.say(format!("Running {} — follow its window.", prep.setup.display()));
+            ctx.progress(Some(15), &format!("Running {} — follow its window. Some installers work for a long time without showing progress.", file_name(&prep.setup)));
+            let st = b.spawn_logged(g, &cmd)?.wait()?;
+            ctx.say(format!("Exited: {st}"));
+            ctx.progress(Some(90), "Looking for the installed game");
+            let found = b.scan(&[]);
+            for f in &found {
+                ctx.say(format!("found {} in {}", f.game.short(), f.dir.display()));
+            }
+            b.save()?;
+            let installed = b.status(g).installed;
+            if let Some(x) = &prep.extracted {
+                ctx.say(format!("The disc image was extracted to {} (removed by the next install-from for {}).", x.display(), g.slug()));
+            }
+            program_result(
+                g,
+                &st,
+                &file_name(&prep.setup),
+                json!({
+                    "setup": report::path(&prep.setup),
+                    "extracted": prep.extracted.as_deref().map(report::path),
+                    "found": report::found(&found),
+                    "installed": installed,
+                }),
+            )
+        }
+        Cmd::Workshop { game: g, search, page } => {
+            let g = game(&g)?;
+            workshop::game_number(g).map_err(|e| usage(e.to_string()))?;
+            let (items, hidden) = b.workshop_list(&workshop::Net::new(), g, &search, page)?;
+            if !ctx.json {
+                if items.is_empty() {
+                    println!("Nothing found on this page of the {} workshop.", g.short());
+                }
+                for it in &items {
+                    let mark = match &it.installed {
+                        Some(id) => format!("installed as {id}"),
+                        None => "not installed".into(),
+                    };
+                    let mb = it.size as f64 / 1_048_576.0;
+                    println!("{} {} [{}] by {} — {mb:.0} MB, {mark}\n    id: {}", it.name, it.version, it.kind, it.author, it.id);
+                }
+                println!("\nFan content from {} (base games and EA's own patches aren't listed). Install with `beacon workshop-install {} <id>`.", workshop::SITE, g.slug());
+            }
+            report::workshop(g, page, &items, hidden)
+        }
+        Cmd::WorkshopInstall { game: g, id, select } => {
+            let g = game(&g)?;
+            workshop::game_number(g).map_err(|e| usage(e.to_string()))?;
+            let (done, m) = b.workshop_install(&workshop::Net::new(), g, &id, &mut |p: Option<u8>, t: &str| ctx.progress(p, t))?;
+            let selected = select && m.is_some();
+            if let Some(m) = m.as_ref().filter(|_| select) {
+                b.select_mod(g, Some(&m.id))?;
+                b.save()?;
+            }
+            ctx.say(format!("Installed {} {} into {}", done.name, done.version, done.dir.display()));
+            report::ok(
+                Some(g),
+                format!("Installed {}", done.name),
+                json!({
+                    "id": done.id,
+                    "name": done.name,
+                    "version": done.version,
+                    "kind": done.kind,
+                    "dir": report::path(&done.dir),
+                    "files": done.files,
+                    "bytes": done.bytes,
+                    "skipped": done.skipped,
+                    "mod": report::value(&m),
+                    "selected": selected,
+                }),
+            )
+        }
+        Cmd::Aio => {
+            if !ctx.json {
+                let games = b.aio_games();
+                if games.is_empty() {
+                    println!("No games from the BFME All-in-One launcher found. Get it at {} (Windows; under Linux, run it with `beacon run <game> <launcher.exe>`).", aio::LAUNCHER_URL);
+                }
+                for a in &games {
+                    println!("{} — {}", a.game.short(), a.dir.display());
+                    if let Some(p) = &a.active_patch {
+                        println!("    patch: {p}");
+                    }
+                    if let Some(m) = &a.active_mod {
+                        println!("    mod:   {m}");
+                    }
+                }
+            }
+            report::aio(b)
+        }
         Cmd::Paths => {
             if !ctx.json {
                 println!("config:   {}", b.paths.config_file.display());
@@ -695,6 +816,39 @@ mod tests {
         assert!(matches!(parse(&["beacon", "log", "aotr"]).cmd, Some(Cmd::Log { lines: 200, .. })));
     }
 
+    #[test]
+    fn new_commands_parse() {
+        assert!(matches!(parse(&["beacon", "install-from", "bfme2", "/media/BFME2.iso", "--json"]).cmd, Some(Cmd::InstallFrom { .. })));
+        assert!(matches!(parse(&["beacon", "workshop", "rotwk"]).cmd, Some(Cmd::Workshop { page: 0, ref search, .. }) if search.is_empty()));
+        assert!(matches!(parse(&["beacon", "workshop", "rotwk", "--search", "edain", "--page", "2"]).cmd, Some(Cmd::Workshop { page: 2, .. })));
+        assert!(matches!(parse(&["beacon", "workshop-install", "rotwk", "abc", "--select"]).cmd, Some(Cmd::WorkshopInstall { select: true, .. })));
+        assert!(matches!(parse(&["beacon", "aio", "--json"]).cmd, Some(Cmd::Aio)));
+        assert!(Cli::try_parse_from(["beacon", "workshop-install", "rotwk"]).is_err());
+    }
+
+    #[test]
+    fn new_commands_refuse_before_the_network() {
+        let mut t = setup();
+        // The workshop only has BFME, BFME II and RotWK.
+        assert_eq!(exit_code(&go(&mut t, &["workshop", "swgb"])), 2);
+        assert_eq!(exit_code(&go(&mut t, &["workshop-install", "conquest", "x"])), 2);
+        // Base games and EA's patches are refused without asking the server.
+        let r = go(&mut t, &["workshop-install", "bfme1", "original-BFME1"]);
+        assert_eq!(exit_code(&r), 1);
+        assert!(error_json(r.as_ref().unwrap_err())["error"].as_str().unwrap().contains("never downloads"));
+        assert_eq!(exit_code(&go(&mut t, &["workshop-install", "bfme2", "official-1"])), 1);
+        // install-from wants an installer, an image or a folder.
+        let txt = t.games.join("notes.txt");
+        fs::write(&txt, b"").unwrap();
+        assert_eq!(exit_code(&go(&mut t, &["install-from", "bfme2", txt.to_str().unwrap()])), 2);
+        assert_eq!(exit_code(&go(&mut t, &["install-from", "bfme2", t.games.join("gone.iso").to_str().unwrap()])), 2);
+        let v = go(&mut t, &["aio"]).unwrap();
+        assert_eq!(v["launcher_url"], "https://bfmeladder.com");
+        assert!(v["games"].as_array().unwrap().is_empty());
+        let s = go(&mut t, &["status"]).unwrap();
+        assert_eq!(s[8]["store_url"], "https://store.steampowered.com/app/356500/");
+    }
+
     struct T {
         _t: tempfile::TempDir,
         b: Beacon,
@@ -713,8 +867,11 @@ mod tests {
         fs::create_dir_all(&bin).unwrap();
         let wine = bin.join("wine");
         fs::write(&wine, "#!/bin/sh\nmkdir -p \"$WINEPREFIX/drive_c/users/tester\"\nexit 0\n").unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&wine, fs::Permissions::from_mode(0o755)).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&wine, fs::Permissions::from_mode(0o755)).unwrap();
+        }
         let b = Beacon::load_with(Paths::under(&t.path().join("beacon"), &home), &bin.to_string_lossy()).unwrap();
         T { _t: t, b, games }
     }
@@ -730,6 +887,8 @@ mod tests {
         run(&json_ctx(), &mut t.b, cli.cmd.unwrap())
     }
 
+    // Uses the stub `wine` (a shell script) and Wine runner ids.
+    #[cfg(unix)]
     #[test]
     fn write_results_and_exit_codes() {
         let mut t = setup();
@@ -788,6 +947,8 @@ mod tests {
         assert!(t.b.game(GameId::Bfme2).cd_key.is_none());
     }
 
+    // Uses the stub `wine` (a shell script) and Wine runner ids.
+    #[cfg(unix)]
     #[test]
     fn mods_and_setup() {
         let mut t = setup();
@@ -820,6 +981,8 @@ mod tests {
         assert_eq!(s[1]["needs_setup"], false);
     }
 
+    // Uses the stub `wine` (a shell script) and Wine runner ids.
+    #[cfg(unix)]
     #[test]
     fn installers_report_their_exit() {
         let mut t = setup();

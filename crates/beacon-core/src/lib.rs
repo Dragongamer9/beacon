@@ -8,16 +8,25 @@
 //! 3. `apply_options()` – write the chosen resolution into Options.ini.
 //! 4. `launch_command()` / `launch()` – start the game (or a mod's launcher)
 //!    through Wine, Proton or umu, logging to `<data>/logs/<game>.log`.
+//!
+//! On Windows (`Beacon::native`) there are no prefixes: the game's exe runs
+//! directly, `setup` has nothing to do, and Options.ini is written under the
+//! real `%APPDATA%`.
 
+pub mod aio;
 pub mod catalog;
 pub mod config;
 pub mod editions;
 pub mod games;
+pub mod installs;
+pub mod media;
 pub mod mods;
+pub mod native;
 pub mod options_ini;
 pub mod registry;
 pub mod report;
 pub mod runner;
+pub mod workshop;
 
 use anyhow::{anyhow, bail, Context, Result};
 use config::{split_args, Config, GameConfig, Paths};
@@ -98,6 +107,9 @@ pub struct GameStatus {
     /// The game has community versions (editions and/or setup steps).
     #[serde(default)]
     pub has_community: bool,
+    /// The game's Steam store page, for games still sold there (only SWGB).
+    #[serde(default)]
+    pub store_url: Option<String>,
 }
 
 /// A catalog entry plus the id of the matching installed mod, if any.
@@ -148,6 +160,29 @@ pub struct Beacon {
     pub paths: Paths,
     pub config: Config,
     pub runners: RunnerSet,
+    /// Windows: games run directly (no Wine prefixes, no regedit import).
+    pub native: bool,
+}
+
+/// What `install-from` will run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreparedInstall {
+    /// The setup program.
+    pub setup: PathBuf,
+    /// Where a disc image was extracted (kept until the next install for that
+    /// game: installers often start helpers that keep reading their files).
+    pub extracted: Option<PathBuf>,
+}
+
+/// A game the BFME All-in-One launcher manages, for `beacon aio`.
+#[derive(Debug, Clone, Serialize)]
+pub struct AioGame {
+    pub game: GameId,
+    pub dir: PathBuf,
+    /// The workshop package it's synced to, e.g. "Patch 2.22 (40)".
+    pub active_patch: Option<String>,
+    /// The launcher's active mod (its `mod.txt`), as it wrote it.
+    pub active_mod: Option<String>,
 }
 
 impl Beacon {
@@ -159,8 +194,24 @@ impl Beacon {
 
     pub fn load_with(paths: Paths, path_env: &str) -> Result<Beacon> {
         let config = Config::load(&paths.config_file)?;
-        let runners = runner::discover(&paths.home, path_env);
-        Ok(Beacon { paths, config, runners })
+        let native = cfg!(windows);
+        let runners = if native { RunnerSet::native() } else { runner::discover(&paths.home, path_env) };
+        Ok(Beacon { paths, config, runners, native })
+    }
+
+    /// Look for runners again (after installing a Proton build, say).
+    pub fn refresh_runners(&mut self) {
+        let path_env = std::env::var("PATH").unwrap_or_default();
+        self.runners = if self.native { RunnerSet::native() } else { runner::discover(&self.paths.home, &path_env) };
+    }
+
+    /// A host path as the game sees it: a `Z:\…` path inside Wine, the path itself on Windows.
+    pub fn game_path(&self, p: &Path) -> String {
+        if self.native {
+            p.to_string_lossy().into_owned()
+        } else {
+            registry::wine_path(p, false)
+        }
     }
 
     pub fn save(&self) -> Result<()> {
@@ -197,6 +248,47 @@ impl Beacon {
         roots
     }
 
+    /// Wine prefixes worth reading the registry of (Beacon's own, `~/.wine`,
+    /// Bottles, Lutris-style `~/Games/<x>`), plus any the caller names. Steam's
+    /// compatdata isn't read: one prefix per Steam game would be slow.
+    pub fn wine_prefixes(&self, extra_roots: &[PathBuf]) -> Vec<PathBuf> {
+        if self.native {
+            return Vec::new();
+        }
+        let h = &self.paths.home;
+        let mut roots = vec![
+            h.join(".wine"),
+            self.paths.data_dir.join("prefixes"),
+            h.join(".local/share/bottles/bottles"),
+            h.join(".var/app/com.usebottles.bottles/data/bottles/bottles"),
+            h.join("Games"),
+        ];
+        roots.extend(self.config.scan_roots.iter().cloned());
+        roots.extend(extra_roots.iter().cloned());
+        installs::find_prefixes(&roots)
+    }
+
+    /// Folders the registry points at: on Windows the real registry (the games'
+    /// installers, EA/Origin, Steam, the All-in-One launcher); on Linux each
+    /// Wine prefix's `system.reg` (an All-in-One launcher run under Wine, say).
+    pub fn install_hints(&self, extra_roots: &[PathBuf]) -> Vec<PathBuf> {
+        let mut out: Vec<PathBuf> = Vec::new();
+        if cfg!(windows) {
+            for (_, dir) in installs::hints(&installs::windows_registry()) {
+                out.push(PathBuf::from(dir));
+            }
+        }
+        for pfx in self.wine_prefixes(extra_roots) {
+            out.extend(installs::prefix_hints(&pfx).into_iter().map(|(_, d)| d));
+        }
+        let mut seen = Vec::new();
+        out.retain(|d| d.is_dir() && !seen.contains(d) && {
+            seen.push(d.clone());
+            true
+        });
+        out
+    }
+
     /// Scan for installs; games without a folder get the first one found.
     pub fn scan(&mut self, extra_roots: &[PathBuf]) -> Vec<FoundGame> {
         self.scan_with(extra_roots, &mut |_: usize, _: usize, _: &Path| {})
@@ -205,12 +297,18 @@ impl Beacon {
     /// `scan`, telling `progress` about each folder before it's searched:
     /// (index, number of folders, folder).
     pub fn scan_with(&mut self, extra_roots: &[PathBuf], progress: &mut dyn FnMut(usize, usize, &Path)) -> Vec<FoundGame> {
-        let mut roots = self.scan_roots();
-        roots.extend(extra_roots.iter().cloned());
+        let mut roots: Vec<(PathBuf, usize)> = self.scan_roots().into_iter().map(|r| (r, 9)).collect();
+        roots.extend(extra_roots.iter().cloned().map(|r| (r, 9)));
+        // Install folders from the registry are searched a few levels deep.
+        for d in self.install_hints(extra_roots) {
+            if !roots.iter().any(|(r, _)| *r == d) {
+                roots.push((d, 3));
+            }
+        }
         let mut found: Vec<FoundGame> = Vec::new();
-        for (i, root) in roots.iter().enumerate() {
+        for (i, (root, depth)) in roots.iter().enumerate() {
             progress(i, roots.len(), root);
-            for f in games::scan(std::slice::from_ref(root), 9) {
+            for f in games::scan(std::slice::from_ref(root), *depth) {
                 if !found.contains(&f) {
                     found.push(f);
                 }
@@ -298,7 +396,7 @@ impl Beacon {
             resolution: cfg.resolution,
             windowed: cfg.windowed,
             extra_args: cfg.extra_args.clone(),
-            prefix_ready: self.paths.prefix_root(g).join("pfx/drive_c").is_dir(),
+            prefix_ready: !self.native && self.paths.prefix_root(g).join("pfx/drive_c").is_dir(),
             virtual_desktop: self.virtual_desktop(g),
             steam_appid: self.steam_appid(g),
             via_steam: self.via_steam(g),
@@ -310,12 +408,13 @@ impl Beacon {
             sage: g.is_sage(),
             wants_cd_key: g.wants_cd_key(),
             requires: g.requires(),
-            virtual_desktop_choice: if g.is_sage() { None } else { cfg.virtual_desktop },
-            virtual_desktop_default: !g.is_sage() && g.default_virtual_desktop(),
+            virtual_desktop_choice: if g.is_sage() || self.native { None } else { cfg.virtual_desktop },
+            virtual_desktop_default: !self.native && !g.is_sage() && g.default_virtual_desktop(),
             needs_setup,
             has_log: log_file.is_file(),
             log_file,
             has_community: !editions::editions(g).is_empty() || !editions::steps(g).is_empty(),
+            store_url: g.store_url().map(str::to_string),
         }
     }
 
@@ -330,8 +429,9 @@ impl Beacon {
         self.game(g).via_steam && self.steam_appid(g).is_some()
     }
 
+    /// Wine's virtual desktop (never on Windows: there's no Wine).
     pub fn virtual_desktop(&self, g: GameId) -> bool {
-        !g.is_sage() && self.game(g).virtual_desktop.unwrap_or_else(|| g.default_virtual_desktop())
+        !self.native && !g.is_sage() && self.game(g).virtual_desktop.unwrap_or_else(|| g.default_virtual_desktop())
     }
 
     // ---- community versions -------------------------------------------
@@ -522,6 +622,15 @@ impl Beacon {
                 }
             }
         }
+        // Mods the All-in-One launcher's workshop put next to the games.
+        let dirs: Vec<(GameId, PathBuf)> = GameId::ALL.into_iter().filter_map(|g| self.game_dir(g).map(|d| (g, d))).collect();
+        for wm in aio::workshop_mods(&dirs, &self.aio_appdatas()) {
+            if let Some(m) = mods::inspect(wm.game, &wm.path, Some(&wm.name)) {
+                if !discovered.iter().any(|d| d.path == m.path) {
+                    discovered.push(m);
+                }
+            }
+        }
         let mut added = Vec::new();
         for m in discovered {
             let known = GameId::ALL.into_iter().flat_map(|g| self.mods(g)).any(|k| k.path == m.path || k.id == m.id);
@@ -639,6 +748,10 @@ impl Beacon {
     }
 
     pub fn needs_setup(&self, g: GameId) -> Result<bool> {
+        if self.native {
+            // No prefix; the game's installer (or the All-in-One launcher) wrote its registry.
+            return Ok(false);
+        }
         let reg = self.registry_for(g)?;
         let fp = self.setup_fingerprint(g, &reg)?;
         let marker: Option<SetupMarker> = std::fs::read_to_string(self.paths.prefix_root(g).join("beacon-setup.json"))
@@ -649,6 +762,9 @@ impl Beacon {
 
     /// The regedit command `setup()` would run, after writing the .reg file.
     pub fn setup_command(&self, g: GameId) -> Result<Command> {
+        if self.native {
+            bail!("on Windows the game's own installer sets it up; there's no prefix");
+        }
         let reg = self.registry_for(g)?;
         let reg_path = self.paths.reg_file(g);
         std::fs::create_dir_all(reg_path.parent().unwrap())?;
@@ -661,7 +777,7 @@ impl Beacon {
     /// Create the prefix if needed and import the registry keys.
     /// Returns true if it did any work.
     pub fn setup(&self, g: GameId, force: bool) -> Result<bool> {
-        if self.via_steam(g) || (!force && !self.needs_setup(g)?) {
+        if self.native || self.via_steam(g) || (!force && !self.needs_setup(g)?) {
             return Ok(false);
         }
         let cmd = self.setup_command(g)?;
@@ -686,6 +802,9 @@ impl Beacon {
     /// installed has no folder yet (its registry can't be written), so its
     /// prefix is simply created by the installer's own run.
     pub fn prepare_prefix(&self, g: GameId) -> Result<bool> {
+        if self.native {
+            return Ok(false);
+        }
         std::fs::create_dir_all(self.paths.prefix_root(g))?;
         if self.via_steam(g) || self.registry_for(g).is_err() {
             return Ok(false);
@@ -695,18 +814,26 @@ impl Beacon {
 
     /// Write the chosen resolution into Options.ini inside the prefix.
     pub fn apply_options(&self, g: GameId) -> Result<Option<PathBuf>> {
-        if g == GameId::Uaw {
+        if g == GameId::Uaw && !self.native {
             return self.fix_uaw_dx10();
         }
         if !g.is_sage() {
             return Ok(None);
         }
         let Some(res) = self.game(g).resolution else { return Ok(None) };
-        let pfx = self.paths.prefix_root(g).join("pfx");
-        if !pfx.join("drive_c").is_dir() {
-            return Ok(None);
-        }
-        let dir = options_ini::appdata_dir(&pfx).join(g.user_data_leaf());
+        let dir = if self.native {
+            // Windows: the real %APPDATA%, under the leaf the game's registry names
+            // (the All-in-One launcher's differ from EA's).
+            let Some(appdata) = self.paths.appdata.clone() else { return Ok(None) };
+            let leaf = if cfg!(windows) { installs::user_data_leaf(&installs::windows_registry(), g) } else { None };
+            appdata.join(leaf.unwrap_or_else(|| g.user_data_leaf().to_string()))
+        } else {
+            let pfx = self.paths.prefix_root(g).join("pfx");
+            if !pfx.join("drive_c").is_dir() {
+                return Ok(None);
+            }
+            options_ini::appdata_dir(&pfx).join(g.user_data_leaf())
+        };
         std::fs::create_dir_all(&dir)?;
         let file = dir.join("Options.ini");
         let current = std::fs::read_to_string(&file).unwrap_or_default();
@@ -753,9 +880,10 @@ impl Beacon {
         if self.via_steam(g) {
             let id = self.steam_appid(g).unwrap().to_string();
             let path_env = std::env::var("PATH").unwrap_or_default();
+            let opener = if self.native { "explorer" } else { "xdg-open" };
             return Ok(match runner::which_in("steam", &path_env) {
                 Some(steam) => Command { program: steam, args: vec!["-applaunch".into(), id], env: vec![], cwd: dir },
-                None => Command { program: "xdg-open".into(), args: vec![format!("steam://rungameid/{id}")], env: vec![], cwd: dir },
+                None => Command { program: opener.into(), args: vec![format!("steam://rungameid/{id}")], env: vec![], cwd: dir },
             });
         }
         let mut args = Vec::new();
@@ -767,7 +895,7 @@ impl Beacon {
         }
         if let Some(m) = &chosen {
             args.push("-mod".into());
-            args.push(registry::wine_path(&m.path, false));
+            args.push(self.game_path(&m.path));
             args.extend(m.args.iter().cloned());
         }
         args.extend(split_args(&cfg.extra_args));
@@ -777,7 +905,7 @@ impl Beacon {
                 exe = x;
             }
             if let Some(m) = mod_dir {
-                args.insert(0, editions::modpath_arg(&dir, &m));
+                args.insert(0, editions::modpath_arg_for(&dir, &m, self.native));
             }
         }
         if self.virtual_desktop(g) {
@@ -802,7 +930,7 @@ impl Beacon {
         use std::io::Write;
         let path = self.paths.log_file(g);
         std::fs::create_dir_all(path.parent().unwrap())?;
-        let mut f = std::fs::OpenOptions::new().create(true).append(what == "launch").write(true).open(&path)?;
+        let mut f = std::fs::OpenOptions::new().create(true).append(what.starts_with("launch")).write(true).open(&path)?;
         if what == "setup" {
             f.set_len(0)?;
         }
@@ -820,11 +948,134 @@ impl Beacon {
 
     pub fn spawn_logged(&self, g: GameId, cmd: &Command) -> Result<std::process::Child> {
         let log = self.open_log(g, cmd, "launch")?;
-        cmd.to_std()
-            .stdout(log.try_clone()?)
-            .stderr(log)
-            .spawn()
-            .with_context(|| format!("starting {}", cmd.program.display()))
+        match cmd.to_std().stdout(log.try_clone()?).stderr(log).spawn() {
+            Ok(child) => Ok(child),
+            // Windows: installers marked "requires administrator" go through the UAC prompt.
+            #[cfg(windows)]
+            Err(e) if e.raw_os_error() == Some(native::ERROR_ELEVATION_REQUIRED) => {
+                let _ = self.open_log(g, cmd, "launch (with administrator rights)");
+                native::spawn_elevated(&self.paths.data_dir, cmd)
+            }
+            Err(e) => Err(e).with_context(|| format!("starting {}", cmd.program.display())),
+        }
+    }
+
+    // ---- install from your own copy ------------------------------------
+
+    /// Get a game's installer ready from the player's own copy: an installer
+    /// .exe as it is, a disc folder's setup program, or a disc image extracted
+    /// into `<data>/tmp/install-<game>-<time>/` first. Run the result with
+    /// `run_in_prefix_command` + `spawn_logged` (in the prefix on Linux,
+    /// directly on Windows), then `scan` to pick up the install.
+    pub fn prepare_install(&self, g: GameId, source: &Path, progress: &mut dyn FnMut(&str)) -> Result<PreparedInstall> {
+        let tmp = self.paths.data_dir.join("tmp");
+        match media::classify(source)? {
+            media::Source::Installer(exe) => Ok(PreparedInstall { setup: exe, extracted: None }),
+            media::Source::Folder(dir) => {
+                let setup = media::find_setup(&dir).ok_or_else(|| anyhow!("no setup program found in {}; pick the installer .exe itself", dir.display()))?;
+                Ok(PreparedInstall { setup, extracted: None })
+            }
+            media::Source::Image(iso) => {
+                // Earlier extracted copies for this game are done with by now.
+                let prefix = format!("install-{}-", g.slug());
+                if let Ok(rd) = std::fs::read_dir(&tmp) {
+                    for e in rd.flatten() {
+                        if e.file_name().to_string_lossy().starts_with(&prefix) && e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                            let _ = std::fs::remove_dir_all(e.path());
+                        }
+                    }
+                }
+                let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+                let dest = tmp.join(format!("{prefix}{stamp}"));
+                progress(&format!("Extracting {} (this can take a few minutes)", iso.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
+                media::extract_image(&iso, &dest)?;
+                progress("Looking for the setup program");
+                let setup = media::find_setup(&dest).ok_or_else(|| anyhow!("no setup program on the disc image; extracted to {}", dest.display()))?;
+                Ok(PreparedInstall { setup, extracted: Some(dest) })
+            }
+        }
+    }
+
+    // ---- BFME All-in-One launcher ---------------------------------------
+
+    /// Folders that may be the All-in-One launcher's `%APPDATA%`: the real
+    /// one on Windows; in Wine, each prefix's user AppData (Beacon's own
+    /// prefixes and the prefixes the games sit in).
+    pub fn aio_appdatas(&self) -> Vec<PathBuf> {
+        let mut out: Vec<PathBuf> = Vec::new();
+        if self.native {
+            out.extend(self.paths.appdata.clone());
+        }
+        let mut pfxs = self.wine_prefixes(&[]);
+        pfxs.extend(GameId::ALL.into_iter().filter_map(|g| self.game_dir(g)).filter_map(|d| aio::prefix_of(&d)));
+        for p in pfxs {
+            let a = options_ini::appdata_dir(&p);
+            if !out.contains(&a) {
+                out.push(a);
+            }
+        }
+        out
+    }
+
+    /// The installed BFME games the All-in-One launcher manages.
+    pub fn aio_games(&self) -> Vec<AioGame> {
+        let appdatas = self.aio_appdatas();
+        [GameId::Bfme1, GameId::Bfme2, GameId::Rotwk]
+            .into_iter()
+            .filter_map(|g| {
+                let dir = self.game_dir(g)?;
+                aio::manages(&dir, g, &appdatas).then(|| AioGame {
+                    game: g,
+                    active_patch: appdatas.iter().find_map(|a| aio::active_patch(a, g)),
+                    active_mod: aio::active_mod(&dir),
+                    dir,
+                })
+            })
+            .collect()
+    }
+
+    // ---- workshop --------------------------------------------------------
+
+    /// The workshop's fan content for a game, marked with what's installed.
+    pub fn workshop_list(&self, http: &dyn workshop::Http, g: GameId, keyword: &str, page: u32) -> Result<(Vec<workshop::Item>, usize)> {
+        let (mut items, hidden) = workshop::list(http, g, keyword, page)?;
+        self.mark_workshop_installed(g, &mut items);
+        Ok((items, hidden))
+    }
+
+    /// Fill in `installed` (the Beacon mod id) for workshop items already in the mods library.
+    pub fn mark_workshop_installed(&self, g: GameId, items: &mut [workshop::Item]) {
+        let have = workshop::installed(&self.paths.mods_dir(), g);
+        for it in items.iter_mut() {
+            it.installed = have
+                .iter()
+                .find(|(guid, _)| guid == &it.id)
+                .and_then(|(_, dir)| mods::inspect(g, dir, None))
+                .map(|m| m.id);
+        }
+    }
+
+    /// Download a workshop entry (fan content only) into the mods library.
+    pub fn workshop_install(
+        &self,
+        http: &dyn workshop::Http,
+        g: GameId,
+        id: &str,
+        progress: &mut dyn FnMut(Option<u8>, &str),
+    ) -> Result<(workshop::Installed, Option<ModEntry>)> {
+        workshop::game_number(g)?;
+        progress(Some(1), "Asking the workshop for the package");
+        let v = workshop::fetch(http, id)?;
+        let pkg = workshop::parse_package(&v, &workshop::language_code(&self.config.language))?;
+        if pkg.item.game != g {
+            bail!("{} is for {}, not {}", pkg.item.name, pkg.item.game.short(), g.short());
+        }
+        let done = workshop::install(http, &pkg, &self.paths.mods_dir(), &self.paths.data_dir.join("tmp"), progress)?;
+        let m = mods::inspect(g, &done.dir, None).map(|mut m| {
+            m.in_library = true;
+            m
+        });
+        Ok((done, m))
     }
 }
 
@@ -864,6 +1115,8 @@ mod tests {
         Env { _t: t, beacon, games }
     }
 
+    // Runs the stub `wine` (a shell script) and checks Wine command lines.
+    #[cfg(unix)]
     #[test]
     fn scan_assigns_and_status() {
         let mut e = env();
@@ -897,6 +1150,8 @@ mod tests {
         assert!(e.beacon.set_path(GameId::Bfme1, &e.games.join("BFME2")).is_err());
     }
 
+    // Runs the stub `wine` (a shell script) and checks Wine command lines.
+    #[cfg(unix)]
     #[test]
     fn launch_args_with_mods() {
         let mut e = env();
@@ -928,6 +1183,8 @@ mod tests {
         assert_eq!(edain.args.len(), 1);
     }
 
+    // Runs the stub `wine` (a shell script) and checks Wine command lines.
+    #[cfg(unix)]
     #[test]
     fn setup_runs_once_and_writes_options() {
         let mut e = env();
@@ -964,6 +1221,8 @@ mod tests {
         assert!(c.env.contains(&("WINEDEBUG".into(), "+seh".into())));
     }
 
+    // Runs the stub `wine` (a shell script) and checks Wine command lines.
+    #[cfg(unix)]
     #[test]
     fn aotr_standalone_setup() {
         let mut e = env();
@@ -997,6 +1256,8 @@ mod tests {
         assert_eq!(e.beacon.game(GameId::Aotr).path.unwrap(), root.join("aotr"));
     }
 
+    // Runs the stub `wine` (a shell script) and checks Wine command lines.
+    #[cfg(unix)]
     #[test]
     fn conquest_runs_plain() {
         let mut e = env();
@@ -1025,6 +1286,8 @@ mod tests {
         assert!(e.beacon.launch_command(g, Some(&m.id)).unwrap_err().to_string().contains("-mod"));
     }
 
+    // Runs the stub `wine` (a shell script) and checks Wine command lines.
+    #[cfg(unix)]
     #[test]
     fn other_games() {
         let mut e = env();
@@ -1068,6 +1331,8 @@ mod tests {
         assert!(e.beacon.apply_options(GameId::Uaw).unwrap().is_none(), "already fixed");
     }
 
+    // Runs the stub `wine` (a shell script) and checks Wine command lines.
+    #[cfg(unix)]
     #[test]
     fn community_versions() {
         let mut e = env();
@@ -1119,6 +1384,8 @@ mod tests {
         assert!(e.beacon.add_files(GameId::Uaw, "patch3", &x).is_err(), "installers run, not merge");
     }
 
+    // Runs the stub `wine` (a shell script) and checks Wine command lines.
+    #[cfg(unix)]
     #[test]
     fn status_tells_front_ends_what_applies() {
         let mut e = env();
@@ -1157,6 +1424,8 @@ mod tests {
         assert!(!back.sage);
     }
 
+    // Runs the stub `wine` (a shell script) and checks Wine command lines.
+    #[cfg(unix)]
     #[test]
     fn installers_run_before_the_game_is_there() {
         let e = env();
@@ -1182,6 +1451,103 @@ mod tests {
         let mut said = Vec::new();
         e.beacon.add_files_with(GameId::Uaw, "xliveless", &x, &mut |t: &str| said.push(t.to_string())).unwrap();
         assert!(said.iter().any(|t| t.starts_with("Copying files")), "{said:?}");
+    }
+
+    /// Windows behaviour, checked on any OS: no prefix, the exe itself, Options.ini under %APPDATA%.
+    #[test]
+    fn native_mode() {
+        let mut e = env();
+        e.beacon.native = true;
+        e.beacon.runners = RunnerSet::native();
+        let appdata = e.games.parent().unwrap().join("AppData/Roaming");
+        e.beacon.paths.appdata = Some(appdata.clone());
+        e.beacon.scan(&[]);
+        let g = GameId::Bfme2;
+        let st = e.beacon.status(g);
+        assert!(st.ready, "{:?}", st.issues);
+        assert_eq!(st.runner.as_ref().unwrap().kind, runner::RunnerKind::Native);
+        assert_eq!((st.prefix_ready, st.needs_setup), (false, Some(false)));
+        assert!(!e.beacon.setup(g, true).unwrap(), "nothing to set up");
+        assert!(!e.beacon.prepare_prefix(g).unwrap());
+        assert!(e.beacon.setup_command(g).is_err());
+        assert!(!e.beacon.paths.data_dir.join("prefixes").exists(), "no prefixes on Windows");
+
+        e.beacon.game_mut(g).windowed = true;
+        let mods = e.beacon.paths.mods_dir().join("bfme2/My Mod");
+        fs::create_dir_all(&mods).unwrap();
+        fs::write(mods.join("my.big"), b"").unwrap();
+        let c = e.beacon.launch_command(g, Some("bfme2:my-mod")).unwrap();
+        assert!(c.program.ends_with("lotrbfme2.exe"), "{c:?}");
+        assert_eq!(c.args, vec!["-win".to_string(), "-mod".into(), mods.to_string_lossy().into_owned()]);
+        assert_eq!(c.cwd, e.games.join("BFME2"));
+        assert!(c.env.is_empty());
+
+        e.beacon.game_mut(g).resolution = Resolution::parse("1920x1080");
+        let ini = e.beacon.apply_options(g).unwrap().unwrap();
+        assert_eq!(ini, appdata.join("My The Battle for Middle-earth II Files/Options.ini"));
+        assert_eq!(fs::read_to_string(ini).unwrap(), "Resolution = 1920 1080\r\n");
+
+        // No Wine virtual desktop, and the store link is there for SWGB.
+        let swgb = e.games.join("SWGB/Game");
+        fs::create_dir_all(&swgb).unwrap();
+        fs::write(swgb.join("battlegrounds_x1.exe"), b"").unwrap();
+        e.beacon.set_path(GameId::Swgb, &swgb).unwrap();
+        let st = e.beacon.status(GameId::Swgb);
+        assert!(!st.virtual_desktop && !st.virtual_desktop_default);
+        assert_eq!(st.store_url.as_deref(), Some("https://store.steampowered.com/app/356500/"));
+        assert!(e.beacon.launch_command(GameId::Swgb, None).unwrap().program.ends_with("battlegrounds_x1.exe"));
+        let v = serde_json::to_value(e.beacon.status(GameId::Uaw)).unwrap();
+        assert!(v["store_url"].is_null(), "UaW is delisted");
+    }
+
+    #[test]
+    fn install_from_installer_or_folder() {
+        let e = env();
+        let disc = e.games.join("BFME2 Disc");
+        fs::create_dir_all(disc.join("Setup")).unwrap();
+        fs::write(disc.join("autorun.inf"), "[autorun]\nopen=AutoRun.exe\n").unwrap();
+        fs::write(disc.join("AutoRun.exe"), b"").unwrap();
+        fs::write(disc.join("Setup/Setup.exe"), b"").unwrap();
+        let p = e.beacon.prepare_install(GameId::Bfme2, &disc, &mut |_: &str| {}).unwrap();
+        assert_eq!((p.setup, p.extracted), (disc.join("Setup/Setup.exe"), None));
+        let exe = disc.join("AutoRun.exe");
+        assert_eq!(e.beacon.prepare_install(GameId::Bfme2, &exe, &mut |_: &str| {}).unwrap().setup, exe);
+        let empty = e.games.join("Empty");
+        fs::create_dir_all(&empty).unwrap();
+        assert!(e.beacon.prepare_install(GameId::Bfme2, &empty, &mut |_: &str| {}).unwrap_err().to_string().contains("no setup program"));
+        assert!(e.beacon.prepare_install(GameId::Bfme2, &e.games.join("nope.iso"), &mut |_: &str| {}).is_err());
+    }
+
+    /// The All-in-One launcher run inside a Wine prefix: its registry points at
+    /// a folder outside every scan root, and it's recognised as the launcher's.
+    #[cfg(unix)]
+    #[test]
+    fn all_in_one_launcher_in_wine() {
+        let mut e = env();
+        let home = e.games.parent().unwrap().to_path_buf();
+        let outside = home.parent().unwrap().join("Other Drive");
+        let b2 = outside.join("BFME2");
+        fs::create_dir_all(&b2).unwrap();
+        fs::write(b2.join("lotrbfme2.exe"), b"").unwrap();
+        fs::create_dir_all(outside.join("BFME Workshop/Mods")).unwrap();
+        let pfx = home.join("Games/aio-launcher");
+        let appdata = pfx.join("drive_c/users/me/AppData/Roaming");
+        fs::create_dir_all(appdata.join("BFME Workshop/Config")).unwrap();
+        fs::write(appdata.join("BFME Workshop/Config/active_patch_1.json"), r#"{"Guid":"p","Name":"Patch 2.22","Version":"40"}"#).unwrap();
+        let win = format!("Z:{}\\\\", b2.to_string_lossy().replace('/', "\\\\"));
+        let reg = format!(
+            "WINE REGISTRY Version 2\n\n[Software\\\\Wow6432Node\\\\Electronic Arts\\\\Electronic Arts\\\\The Battle for Middle-earth II] 1\n\"InstallPath\"=\"{win}\"\n"
+        );
+        fs::write(pfx.join("system.reg"), reg).unwrap();
+
+        assert!(e.beacon.wine_prefixes(&[]).contains(&pfx));
+        assert!(e.beacon.install_hints(&[]).contains(&b2), "{:?}", e.beacon.install_hints(&[]));
+        let found = e.beacon.scan(&[]);
+        assert!(found.iter().any(|f| f.game == GameId::Bfme2 && f.dir == b2), "{found:?}");
+        e.beacon.set_path(GameId::Bfme2, &b2).unwrap();
+        let aio = e.beacon.aio_games();
+        assert_eq!(aio.len(), 1, "{aio:?}");
+        assert_eq!((aio[0].game, aio[0].active_patch.as_deref()), (GameId::Bfme2, Some("Patch 2.22 (40)")));
     }
 
     #[test]

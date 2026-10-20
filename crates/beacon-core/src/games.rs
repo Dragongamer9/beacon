@@ -179,6 +179,16 @@ impl GameId {
         }
     }
 
+    /// The game's Steam store page, for games still sold there. Only Galactic
+    /// Battlegrounds Saga is: Universe at War (app 10430) was delisted in 2014, and
+    /// Armies of Exigo and Rise of Legends were never on Steam.
+    pub fn store_url(self) -> Option<&'static str> {
+        match self {
+            GameId::Swgb => Some("https://store.steampowered.com/app/356500/"),
+            _ => None,
+        }
+    }
+
     /// Run inside a Wine virtual desktop unless the player turns it off.
     /// SWGB's fullscreen mode shifts mouse clicks under Proton.
     pub fn default_virtual_desktop(self) -> bool {
@@ -227,8 +237,9 @@ pub fn find_exe_in_named(dir: &Path, name: &str) -> Option<PathBuf> {
     std::fs::read_dir(dir).ok()?.flatten().map(|e| e.path()).find(|p| p.is_file() && p.file_name().map(|n| n.to_string_lossy().eq_ignore_ascii_case(name)).unwrap_or(false))
 }
 
-fn game_for_file(name: &str) -> Option<GameId> {
-    // AotR shares RotWK's exe name; the scanner reclassifies it by folder.
+/// The game an exe name belongs to (case-insensitive). AotR shares RotWK's exe
+/// name; the scanner reclassifies it by folder.
+pub fn game_for_exe(name: &str) -> Option<GameId> {
     GameId::ALL.into_iter().filter(|g| *g != GameId::Aotr).find(|g| g.exes().iter().any(|e| name.eq_ignore_ascii_case(e)))
 }
 
@@ -302,7 +313,7 @@ pub fn scan(roots: &[PathBuf], max_depth: usize) -> Vec<FoundGame> {
             if !entry.file_type().is_file() {
                 continue;
             }
-            let Some(mut game) = game_for_file(&entry.file_name().to_string_lossy()) else { continue };
+            let Some(mut game) = game_for_exe(&entry.file_name().to_string_lossy()) else { continue };
             let Some(dir) = entry.path().parent() else { continue };
             if !folder_agrees(game, dir) {
                 continue;
@@ -326,6 +337,7 @@ pub fn scan(roots: &[PathBuf], max_depth: usize) -> Vec<FoundGame> {
 }
 
 /// Where installs usually end up on a Linux gaming box.
+#[cfg(not(windows))]
 pub fn default_scan_roots(home: &Path) -> Vec<PathBuf> {
     let mut roots = vec![
         home.join("Games"),
@@ -337,6 +349,21 @@ pub fn default_scan_roots(home: &Path) -> Vec<PathBuf> {
     if let Ok(user) = std::env::var("USER") {
         roots.push(PathBuf::from("/run/media").join(user));
     }
+    roots
+}
+
+/// Where installs usually end up on Windows (the ones that exist): the
+/// publishers' and stores' folders, Steam libraries, `%USERPROFILE%\Games` and
+/// the BFME All-in-One launcher's `<drive>:\BFME1`, `BFME2`, `RotWK`.
+#[cfg(windows)]
+pub fn default_scan_roots(home: &Path) -> Vec<PathBuf> {
+    let env = |k: &str| std::env::var(k).ok();
+    let mut roots = crate::installs::windows_scan_roots(home, &env);
+    if let Some(steam) = crate::installs::steam_root_from(&crate::installs::windows_registry()) {
+        roots.extend(crate::installs::steam_common_dirs(&steam));
+    }
+    roots.retain(|p| p.is_dir());
+    roots.dedup();
     roots
 }
 
@@ -436,5 +463,16 @@ mod tests {
         assert!(find_exe_in(&swgb, GameId::Swgb).unwrap().ends_with("battlegrounds_x1.exe"));
         assert_eq!(GameId::Swgb.family(), Family::Other);
         assert_eq!(GameId::parse("swgb").unwrap().steam_appid(), Some(356500));
+    }
+
+    #[test]
+    fn store_links_only_for_games_still_sold() {
+        assert_eq!(GameId::Swgb.store_url(), Some("https://store.steampowered.com/app/356500/"));
+        for g in GameId::ALL.into_iter().filter(|g| *g != GameId::Swgb) {
+            assert_eq!(g.store_url(), None, "{g:?}");
+        }
+        assert_eq!(game_for_exe("LOTRBFME2.EXE"), Some(GameId::Bfme2));
+        assert_eq!(game_for_exe("lotrbfme2ep1.exe"), Some(GameId::Rotwk));
+        assert_eq!(game_for_exe("setup.exe"), None);
     }
 }

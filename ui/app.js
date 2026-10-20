@@ -6,7 +6,7 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "
 
 let snap = null;
 let sel = 0;
-const sheets = []; // stack of open sheets: "mods" | "catalog" | "game" | "launcher"
+const sheets = []; // stack of open sheets: "mods" | "catalog" | "workshop" | "game" | "launcher"
 let openSheet = null; // top of the stack
 let overlayState = null; // { game, phase }
 let installing = null; // game id while an installer we started is running
@@ -75,7 +75,9 @@ const KICKERS = {
   rol: "Big Huge Games · 2006",
   swgb: "LucasArts · 2001",
 };
-const STORE = { swgb: "https://store.steampowered.com/app/356500/" };
+// Games the BFME workshop (bfmeladder.com) has fan content for.
+const WORKSHOP_GAMES = ["bfme1", "bfme2", "rotwk"];
+const fmtSize = (b) => (b >= 1073741824 ? `${(b / 1073741824).toFixed(1)} GB` : b >= 1048576 ? `${Math.max(1, Math.round(b / 1048576))} MB` : b > 0 ? `${Math.max(1, Math.round(b / 1024))} KB` : "");
 const communityCache = {};
 async function loadCommunity(id) {
   communityCache[id] = await api.call("get_community", { game: id });
@@ -149,7 +151,7 @@ function renderHero() {
   const play = $("#btn-play");
   const label = $("#play-label");
   if (!g.installed) {
-    label.textContent = g.id === "aotr" ? "Install Age of the Ring" : !isSage(g) ? `Install or locate ${g.short}` : "Locate game folder";
+    label.textContent = g.id === "aotr" ? "Install Age of the Ring" : `Install or locate ${g.short}`;
     play.disabled = false;
   } else {
     label.textContent = running ? "Running…" : "Play";
@@ -174,6 +176,7 @@ function render() {
   // Only the top sheet re-renders; ones underneath refresh when uncovered.
   if (openSheet === "mods") renderModsSheet();
   if (openSheet === "catalog") renderCatalogSheet();
+  if (openSheet === "workshop") renderWorkshopSheet();
   if (openSheet === "game") renderGameSheet();
   if (openSheet === "launcher") renderLauncherSheet();
 }
@@ -182,7 +185,7 @@ function render() {
 
 async function play() {
   const g = game();
-  if (!g.installed) return g.id === "aotr" || !isSage(g) ? openGameSheet() : locate(g);
+  if (!g.installed) return openGameSheet();
   if (!g.ready || isRunning(g.id)) return;
   try {
     await api.call("launch", { game: g.id, modId: null });
@@ -226,6 +229,7 @@ function renderModsSheet() {
   const sheet = $("#sheet-mods");
   sheet.querySelector("[data-game-short]").textContent = g.title;
   $("#btn-add-mod-folder").hidden = !isSage(g);
+  $("#btn-workshop").hidden = !WORKSHOP_GAMES.includes(g.id);
   $("#btn-add-mod-file").querySelector("svg").nextSibling.textContent = isSage(g) ? "Add mod file (.big or launcher)" : "Add a mod's launcher (.exe)";
   const mods = modsCache[g.id] || [];
   const keep = nav.current()?.dataset.key;
@@ -313,6 +317,103 @@ function renderCatalogSheet() {
   nav.refocus(keep ? `[data-key="${CSS.escape(keep)}"]` : null);
 }
 
+// Workshop: fan content from the BFME Foundation's workshop (never the base games).
+const ws = { game: null, items: [], hidden: 0, page: 0, search: "", loading: false, error: null, installing: null, more: true };
+
+async function openWorkshop() {
+  const g = game();
+  if (ws.game !== g.id) Object.assign(ws, { game: g.id, items: [], hidden: 0, page: 0, search: "", error: null, more: true });
+  open("workshop", $("#sheet-workshop"));
+  if (!ws.items.length) await loadWorkshop(0);
+}
+
+async function loadWorkshop(page) {
+  const id = ws.game;
+  ws.loading = true;
+  ws.error = null;
+  render();
+  try {
+    const res = await api.call("workshop_list", { game: id, search: ws.search, page });
+    if (ws.game !== id) return;
+    ws.items = page === 0 ? res.items : [...ws.items, ...res.items.filter((it) => !ws.items.some((x) => x.id === it.id))];
+    ws.hidden = res.hidden;
+    ws.page = page;
+    ws.more = res.items.length + res.hidden > 0;
+  } catch (e) {
+    ws.error = String(e?.message ?? e);
+  }
+  ws.loading = false;
+  render();
+}
+
+function renderWorkshopSheet() {
+  const g = game();
+  $("#sheet-workshop").querySelector("[data-game-short]").textContent = g.title;
+  $("#btn-workshop-more").hidden = !ws.more || ws.loading || !!ws.error;
+  const keep = nav.current()?.dataset.key;
+  const note = (t) => `<p class="section-label" style="text-transform:none;letter-spacing:0;font-weight:400">${t}</p>`;
+  const kinds = { mod: "Mod", patch: "Patch", enhancement: "Add-on", maps: "Maps" };
+  const rows = $("#workshop-rows");
+  rows.innerHTML = [
+    fieldHTML({ key: "ws-search", label: "Search", placeholder: "Name or words from the description", value: ws.search }),
+    ws.loading ? note("Asking the workshop…") : "",
+    ws.error ? note(`Couldn't reach the workshop: ${esc(ws.error)}`) : "",
+    !ws.loading && !ws.error && !ws.items.length ? note("Nothing found.") : "",
+    ...ws.items.map((it) =>
+      rowHTML({
+        key: `ws:${it.id}`,
+        label: `${it.name}${it.version ? ` ${it.version}` : ""}`,
+        sub: [it.author && `by ${it.author}`, fmtSize(it.size), it.description].filter(Boolean).join(" · "),
+        badge: it.installed ? "Installed" : kinds[it.kind] ?? it.kind,
+        value: it.installed ? (g.selected_mod === it.installed ? "" : "Use") : "Install",
+        tick: !!it.installed && g.selected_mod === it.installed,
+        selected: !!it.installed,
+      })
+    ),
+    note("Fan-made content from the BFME Foundation's workshop (bfmeladder.com), installed into Beacon's mods. Base games and EA's own patches aren't listed: Beacon never downloads the games."),
+  ].join("");
+  const search = rows.querySelector("#f-ws-search");
+  search.addEventListener("change", () => {
+    ws.search = search.value.trim();
+    loadWorkshop(0);
+  });
+  rows.querySelectorAll(".row").forEach((r) =>
+    r.addEventListener("click", async () => {
+      const it = ws.items.find((x) => `ws:${x.id}` === r.dataset.key);
+      if (!it) return;
+      if (it.installed) {
+        if (await act(() => api.call("select_mod", { game: g.id, id: it.installed }))) {
+          closeAllSheets();
+          toast(`${it.name} selected`);
+        }
+      } else workshopInstall(g, it);
+    })
+  );
+  nav.refocus(keep ? `[data-key="${CSS.escape(keep)}"]` : null);
+}
+
+async function workshopInstall(g, it) {
+  ws.installing = it.id;
+  showOverlay({ title: `Installing ${it.name}…`, text: `Downloading ${fmtSize(it.size) || "the files"} from the BFME workshop.` });
+  try {
+    const [next, msg] = await api.call("workshop_install", { game: g.id, id: it.id });
+    snap = next;
+    await loadMods(g.id, true);
+    ws.installing = null;
+    hideOverlay();
+    await loadWorkshop(0);
+    toast(msg);
+  } catch (e) {
+    ws.installing = null;
+    showOverlay({ title: `Couldn't install ${it.name}`, text: String(e?.message ?? e), error: true, ok: true });
+  }
+}
+
+function onWorkshopProgress({ id, pct, text }) {
+  if (ws.installing !== id || $("#overlay").hidden) return;
+  $("#overlay-text").textContent = pct == null ? text : `${text} (${pct}%)`;
+}
+
 async function findMods() {
   try {
     const [next, added] = await api.call("find_mods");
@@ -380,21 +481,39 @@ function renderGameSheet() {
           rowHTML({ key: "aotr-install", label: "2 · Run the installer", sub: "Pick the installer .exe from the extracted folder", value: "Choose" }),
         ]
       : []),
-    ...(!sage && !g.installed
+    ...(!aotr && !g.installed
       ? [
-          ...(STORE[g.id] ? [rowHTML({ key: "store", label: "Get it", sub: "Still sold — opens the store page", value: "Open" })] : []),
-          rowHTML({ key: "install", label: "Run the game's installer", sub: `Your disc or setup files — it installs into ${g.short}'s own Wine prefix`, value: "Choose" }),
+          ...(g.store_url ? [rowHTML({ key: "store", label: "Get it on Steam", sub: "Still sold — opens the store page", value: "Open" })] : []),
+          `<div class="mod-line">${rowHTML({
+            key: "own-copy",
+            label: "Install from your own copy",
+            sub: snap.native ? "Your disc's installer, a disc image (.iso) or setup files" : `Your disc's installer, a disc image (.iso) or setup files — it installs into ${g.short}'s own Wine prefix`,
+            value: "Choose",
+          })}<button class="nav side" data-key="own-copy-folder">Disc folder</button></div>`,
+          ...(WORKSHOP_GAMES.includes(g.id)
+            ? [
+                rowHTML({
+                  key: "aio",
+                  label: "Get the BFME All-in-One launcher",
+                  sub: snap.native
+                    ? "The BFME Foundation's launcher installs the games — Beacon finds them afterwards"
+                    : "A Windows program from the BFME Foundation — Beacon finds games it installed, also inside Wine prefixes",
+                  value: "Open",
+                }),
+              ]
+            : []),
         ]
       : []),
-    rowHTML({ key: "folder", label: (aotr || !sage) && !g.installed ? "Already installed? Locate it" : "Game folder", sub: g.path || (aotr ? "The Age of the Ring folder, e.g. …/drive_c/AgeoftheRing" : "Not set"), value: "Change" }),
+    rowHTML({ key: "folder", label: !g.installed ? "Already installed? Locate it" : "Game folder", sub: g.path || (aotr ? "The Age of the Ring folder, e.g. …/drive_c/AgeoftheRing" : "Not set"), value: "Change" }),
     !sage || aotr ? "" : fieldHTML({
       key: "cdkey",
       label: "CD key",
       placeholder: g.has_cd_key ? "Saved — type a new one to replace it" : "Key from your copy of the game",
       help: "Stored in this game's own Wine prefix, the way the original installer did.",
     }),
-    `<p class="section-label">Compatibility</p>`,
-    rowHTML({ key: "runner", label: "Runner", sub: "Wine or Proton build used for this game", value: runnerName, cycle: true }),
+    ...(snap.native
+      ? []
+      : [`<p class="section-label">Compatibility</p>`, rowHTML({ key: "runner", label: "Runner", sub: "Wine or Proton build used for this game", value: runnerName, cycle: true })]),
     ...(conquest
       ? [`<p class="section-label">Online</p>`, rowHTML({ key: "mordorwide", label: "Play online with MordorWide", sub: "Community servers; needs patch 1.1 and their exe patch", value: "Guide" })]
       : []),
@@ -405,7 +524,7 @@ function renderGameSheet() {
           ...(g.steam_appid
             ? [rowHTML({ key: "steam", label: "Launch through Steam", sub: "Use Steam's own Proton setup for this Steam copy", extra: `<span class="toggle${g.via_steam ? " on" : ""}"></span>` })]
             : []),
-          ...(g.via_steam
+          ...(g.via_steam || snap.native
             ? []
             : [
                 rowHTML({ key: "vdesk", label: "Virtual desktop", sub: "Runs the game in a fixed-size Wine desktop — fixes click offsets and resolution switching", extra: `<span class="toggle${g.virtual_desktop ? " on" : ""}"></span>` }),
@@ -420,7 +539,7 @@ function renderGameSheet() {
     ...(aotr && g.tool_launcher
       ? [`<button class="nav row-btn" data-key="aotr-launcher"><svg viewBox="0 0 24 24"><use href="#i-open"/></svg>Open the AotR Launcher for updates (may not work under Wine)</button>`]
       : []),
-    `<button class="nav row-btn" data-key="installer"><svg viewBox="0 0 24 24"><use href="#i-plus"/></svg>Run a patch or installer in this game's prefix</button>`,
+    `<button class="nav row-btn" data-key="installer"><svg viewBox="0 0 24 24"><use href="#i-plus"/></svg>${snap.native ? "Run a patch or installer for this game" : "Run a patch or installer in this game's prefix"}</button>`,
     `<button class="nav row-btn" data-key="log"><svg viewBox="0 0 24 24"><use href="#i-scroll"/></svg>Open log</button>`,
     `<button class="nav row-btn" data-key="openfolder"><svg viewBox="0 0 24 24"><use href="#i-open"/></svg>Open game folder</button>`,
     `<div class="cmd" id="cmd-preview">…</div>`,
@@ -444,7 +563,9 @@ function renderGameSheet() {
   on("windowed", "click", () => saveDisplay({ windowed: !g.windowed }));
   on("aotr-get", "click", () => act(() => api.call("open_url", { url: AOTR_URL }), "Opened ModDB in your browser"));
   on("aotr-install", "click", () => runInstaller(g));
-  on("install", "click", () => runInstaller(g));
+  on("own-copy", "click", () => installFromCopy(g, false));
+  on("own-copy-folder", "click", () => installFromCopy(g, true));
+  on("aio", "click", () => act(() => api.call("open_url", { url: snap.aio_url }), "Opened bfmeladder.com in your browser"));
   on("edition", "cycle", (e) => {
     if (installedEds.length < 2) return;
     const i = Math.max(0, installedEds.findIndex((x) => x.active));
@@ -467,7 +588,7 @@ function renderGameSheet() {
       addCommunityFiles(g, st, path);
     });
   }
-  on("store", "click", () => act(() => api.call("open_url", { url: STORE[g.id] }), "Opened the store page"));
+  on("store", "click", () => act(() => api.call("open_url", { url: g.store_url }), "Opened the store page"));
   on("vdesk", "click", () => act(() => api.call("set_launch_options", { game: g.id, virtualDesktop: !g.virtual_desktop, viaSteam: null })));
   on("steam", "click", () => act(() => api.call("set_launch_options", { game: g.id, virtualDesktop: null, viaSteam: !g.via_steam })));
   on("mordorwide", "click", () => act(() => api.call("open_url", { url: "https://mordorwi.de/howtoplay" }), "Opened the MordorWide guide"));
@@ -492,6 +613,14 @@ async function runInstaller(g, path, step = null) {
   if (!path) return;
   installing = g.id;
   if (!(await act(() => api.call("run_installer", { game: g.id, path, step })))) installing = null;
+}
+
+// Install from the player's own copy: installer .exe, disc image (.iso) or disc folder.
+async function installFromCopy(g, folder) {
+  const path = folder ? await api.call("pick_folder") : await api.call("pick_file", { kind: "copy" });
+  if (!path) return;
+  installing = g.id;
+  if (!(await act(() => api.call("install_from", { game: g.id, path })))) installing = null;
 }
 
 async function addCommunityFiles(g, st, path) {
@@ -520,15 +649,26 @@ function renderLauncherSheet() {
   const def = snap.runners.find((r) => r.id === snap.default_runner);
   const best = snap.runners.find((r) => r.id === snap.best_runner);
   const rows = $("#launcher-rows");
+  const aio = aioCache?.games ?? [];
   rows.innerHTML = [
     `<p class="section-label">Games</p>`,
     `<button class="nav row-btn" data-key="scan"><svg viewBox="0 0 24 24"><use href="#i-scan"/></svg>Find installed games</button>`,
-    `<p class="section-label">Default runner</p>`,
-    rowHTML({ key: "defrunner", label: "Runner for all games", sub: "Each game can override this", value: def ? def.name : `Automatic${best ? ` (${best.name})` : ""}`, cycle: true }),
-    `<p class="section-label">Runners found</p>`,
-    ...(snap.runners.length
-      ? snap.runners.map((r) => `<div class="row" style="cursor:default"><span style="min-width:0"><span class="label">${esc(r.name)}</span><span class="sub">${esc(r.path)}</span></span><span class="badge">${esc(r.kind)}</span></div>`)
-      : [`<p class="section-label">None — install GE-Proton (ProtonPlus or ProtonUp-Qt), umu-launcher, or Wine.</p>`]),
+    ...(snap.native
+      ? []
+      : [
+          `<p class="section-label">Default runner</p>`,
+          rowHTML({ key: "defrunner", label: "Runner for all games", sub: "Each game can override this", value: def ? def.name : `Automatic${best ? ` (${best.name})` : ""}`, cycle: true }),
+          `<p class="section-label">Runners found</p>`,
+          ...(snap.runners.length
+            ? snap.runners.map((r) => `<div class="row" style="cursor:default"><span style="min-width:0"><span class="label">${esc(r.name)}</span><span class="sub">${esc(r.path)}</span></span><span class="badge">${esc(r.kind)}</span></div>`)
+            : [`<p class="section-label">None — install GE-Proton (ProtonPlus or ProtonUp-Qt), umu-launcher, or Wine.</p>`]),
+        ]),
+    `<p class="section-label">BFME All-in-One launcher</p>`,
+    ...aio.map((a) => {
+      const gg = snap.games.find((x) => x.id === a.game);
+      return `<div class="row" style="cursor:default"><span style="min-width:0"><span class="label">${esc(gg?.short ?? a.game)}${a.active_patch ? ` · ${esc(a.active_patch)}` : ""}</span><span class="sub">${esc(a.dir)}</span></span><span class="badge">Found</span></div>`;
+    }),
+    `<button class="nav row-btn" data-key="aio"><svg viewBox="0 0 24 24"><use href="#i-open"/></svg>${aio.length ? "Open bfmeladder.com" : "Get the All-in-One launcher (bfmeladder.com) — Beacon finds the games it installs"}</button>`,
     `<p class="section-label">Storage</p>`,
     `<button class="nav row-btn" data-key="data"><svg viewBox="0 0 24 24"><use href="#i-folder"/></svg>Open Beacon's data folder (prefixes, mods, logs)</button>`,
     `<p class="section-label">About</p>`,
@@ -543,7 +683,14 @@ function renderLauncherSheet() {
   });
   on("defrunner", "click", (e) => e.currentTarget.dispatchEvent(new CustomEvent("cycle", { detail: 1 })));
   on("data", "click", () => act(() => api.call("open_path", { path: snap.data_dir })));
+  on("aio", "click", () => act(() => api.call("open_url", { url: snap.aio_url }), "Opened bfmeladder.com in your browser"));
   nav.refocus(keep ? `[data-key="${CSS.escape(keep)}"]` : null);
+}
+
+let aioCache = null;
+async function openLauncherSheet() {
+  aioCache = await api.call("aio_info").catch(() => null);
+  open("launcher", $("#sheet-launcher"));
 }
 
 async function scan() {
@@ -591,7 +738,10 @@ async function onGameEvent({ game: id, phase, message }) {
   const inst = installing === id;
   if (phase === "preparing") {
     snap.running = [...new Set([...snap.running, id])];
-    showOverlay({ title: "Lighting the beacon…", text: `Getting ${short}'s Wine prefix ready. The first time can take a minute.` });
+    showOverlay({
+      title: inst ? "Getting the installer ready…" : "Lighting the beacon…",
+      text: message || (snap.native ? `Starting ${short}.` : `Getting ${short}'s Wine prefix ready. The first time can take a minute.`),
+    });
   } else if (phase === "running") {
     showOverlay(
       inst
@@ -637,7 +787,7 @@ nav.onShortcut((b) => {
   } else if (b === "start" && !openSheet) play();
   else if (b === "select") {
     if (openSheet === "launcher") closeSheet();
-    else if (!openSheet) open("launcher", $("#sheet-launcher"));
+    else if (!openSheet) openLauncherSheet();
   }
 });
 
@@ -647,11 +797,14 @@ $("#btn-play").addEventListener("click", play);
 $("#btn-mods").addEventListener("click", () => loadMods(game().id).then(() => open("mods", $("#sheet-mods"))));
 const openGameSheet = () => loadCommunity(game().id).catch(() => {}).then(() => open("game", $("#sheet-game")));
 $("#btn-game-settings").addEventListener("click", openGameSheet);
-$("#btn-launcher-settings").addEventListener("click", () => open("launcher", $("#sheet-launcher")));
+$("#btn-launcher-settings").addEventListener("click", openLauncherSheet);
 $("#btn-scan").addEventListener("click", scan);
 $("#btn-add-mod-file").addEventListener("click", () => addMod("file"));
 $("#btn-add-mod-folder").addEventListener("click", () => addMod("folder"));
 $("#btn-catalog").addEventListener("click", openCatalog);
+$("#btn-workshop").addEventListener("click", openWorkshop);
+$("#btn-workshop-more").addEventListener("click", () => loadWorkshop(ws.page + 1));
+$("#btn-workshop-site").addEventListener("click", () => act(() => api.call("open_url", { url: "https://bfmeladder.com" }), "Opened bfmeladder.com in your browser"));
 $("#btn-find-mods").addEventListener("click", findMods);
 $("#btn-catalog-add").addEventListener("click", () => addMod("file"));
 $("#btn-catalog-find").addEventListener("click", findMods);
@@ -677,6 +830,7 @@ function tick() {
   render();
   nav.focus($("#btn-play"));
   api.on("game-event", onGameEvent);
+  api.on("workshop-progress", onWorkshopProgress);
   tick();
   setInterval(tick, 15000);
 })();

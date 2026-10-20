@@ -53,6 +53,7 @@
     <div class="rows" id="mods-rows"></div>
     <div class="sheet-foot">
       <button class="nav row-btn" id="btn-catalog"><svg viewBox="0 0 24 24"><use href="#i-scroll"/></svg>Browse known mods &amp; patches</button>
+      <button class="nav row-btn" id="btn-workshop"><svg viewBox="0 0 24 24"><use href="#i-download"/></svg>Workshop: fan mods, maps &amp; patches</button>
       <button class="nav row-btn" id="btn-find-mods"><svg viewBox="0 0 24 24"><use href="#i-scan"/></svg>Find mods on this PC</button>
       <button class="nav row-btn" id="btn-add-mod-file"><svg viewBox="0 0 24 24"><use href="#i-plus"/></svg>Add mod file (.big or launcher)</button>
       <button class="nav row-btn" id="btn-add-mod-folder"><svg viewBox="0 0 24 24"><use href="#i-folder"/></svg>Add mod folder</button>
@@ -66,6 +67,15 @@
     <div class="sheet-foot">
       <button class="nav row-btn" id="btn-catalog-add"><svg viewBox="0 0 24 24"><use href="#i-plus"/></svg>Add a downloaded mod</button>
       <button class="nav row-btn" id="btn-catalog-find"><svg viewBox="0 0 24 24"><use href="#i-scan"/></svg>Find mods on this PC</button>
+    </div>
+  </aside>
+
+  <aside class="layer sheet" id="sheet-workshop" hidden>
+    <header><p class="kicker" data-game-short></p><h2>Workshop</h2></header>
+    <div class="rows" id="workshop-rows"></div>
+    <div class="sheet-foot">
+      <button class="nav row-btn" id="btn-workshop-more"><svg viewBox="0 0 24 24"><use href="#i-scan"/></svg>Next page</button>
+      <button class="nav row-btn" id="btn-workshop-site"><svg viewBox="0 0 24 24"><use href="#i-open"/></svg>Open bfmeladder.com</button>
     </div>
   </aside>
 
@@ -110,6 +120,7 @@
     <symbol id="i-folder" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M3.5 7a2 2 0 0 1 2-2h4l2 2.2h7a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/></symbol>
     <symbol id="i-open" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M14 4h6v6M20 4l-8.5 8.5M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4"/></symbol>
     <symbol id="i-check" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" d="m5 12.5 4.5 4.5L19 7.5"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M12 4v11M7.5 10.5 12 15l4.5-4.5M5 19h14"/></symbol>
     <symbol id="i-x" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M6 6l12 12M18 6 6 18"/></symbol>
 
     <!-- Original emblems for the game tiles -->
