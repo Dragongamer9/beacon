@@ -251,7 +251,7 @@ The `beacon` CLI does everything the app does. It's useful over SSH, in scripts,
 ```sh
 beacon scan                          # find games
 beacon status [--json]               # what's ready and what's missing
-beacon set-key bfme2                 # prompts for your CD key
+beacon set-key bfme2                 # prompts for your CD key (or reads it from stdin)
 beacon resolution rotwk 1280x800
 beacon catalog rotwk                 # known mods + links, what's installed
 beacon find-mods                     # link known mods already on this PC
@@ -269,13 +269,102 @@ beacon community swgb                    # community version: editions + steps
 beacon add-files swgb expanding-fronts ~/Downloads/EF_1.5.5_Full.zip
 beacon add-files uaw community-patch ~/Downloads/Community_Patch_2.0.7z
 beacon edition uaw human-resistance      # or: auto
+beacon set-runner rotwk auto             # back to the automatic runner
+beacon run aotr --tool                   # AotR's own launcher, for updates
+beacon log rotwk --lines 50              # the end of a game's log
 ```
+
+## For Hearth / scripting
+
+Every command takes `--json` (before or after the command: `beacon --json mods rotwk` or `beacon mods rotwk --json`).
+Without it the output is for people, as above. Hearth uses only the JSON forms, and these shapes stay stable: new
+fields can appear, existing ones aren't renamed or removed. The code is `crates/beacon-core/src/report.rs`.
+
+### Reading
+
+Each prints one JSON document.
+
+| Command | Prints |
+|---|---|
+| `status` | The list of every game's `GameStatus` (pretty-printed, as since 0.0.1) |
+| `mods <game>` | `{game, selected, mods_dir, mods: [{id, name, game, kind, path, args, in_library}]}` |
+| `catalog <game>` | `{game, items: [{id, name, game, kind, blurb, url, installed}]}` |
+| `runners` | `{runners: [{id, name, kind, path}], best, default, umu}` |
+| `community <game>` | `{game, chosen, editions: [{id, name, blurb, community, installed, active}], steps: [{id, title, detail, url, action, done}]}` |
+| `paths` | `{config, data, prefixes, mods, logs, backups, games: {<game>: {prefix, log, mods}}}` |
+| `log <game> [--lines N]` | `{game, path, exists, lines: [...]}`: the last N lines (default 200, at most 2000) |
+| `launch <game> --dry-run` | `{ok, game, message, command: {program, args, env: [[k, v]], cwd, display}, setup_first}` |
+
+- **`GameStatus`:** `id, family, title, short, path, installed, runner, runner_choice, has_cd_key, resolution, windowed,
+  extra_args, prefix_ready, virtual_desktop, steam_appid, via_steam, edition, selected_mod, tool_launcher, ready,
+  issues: [{level, message}]`. Since 0.0.6 also:
+  - `sage`: a BFME game, where the resolution, windowed (`-win`) and `-mod` apply;
+  - `wants_cd_key`: the game's registry carries a CD key;
+  - `requires`: another game that must be set up too (RotWK: `bfme2`);
+  - `virtual_desktop_choice` (`null` = the game's default) and `virtual_desktop_default`;
+  - `needs_setup`: whether `setup` has work to do, `null` when it can't tell yet;
+  - `log_file`, `has_log`;
+  - `has_community`.
+  The CD key itself is never printed, only `has_cd_key`.
+- **Values:** `kind` (mods) is `mod` or `launcher`. `kind` (catalog) is `mod`, `patch` or `game`; `installed` is the
+  id of the installed mod it matches, or `null`. `kind` (runners) is `umu`, `proton` or `wine`. `action` (steps) is
+  `link`, `installer`, `merge` or `mods`. `chosen` is the edition picked (`null`: automatic). `level` is `error` or
+  `warn`.
+
+### Changing things
+
+Long jobs print one progress line for each step while they work, then every command prints one result line. Each line
+is one JSON object:
+
+```json
+{"event":"progress","pct":40,"text":"Looking in /home/me/Games"}
+{"ok":true,"game":"rotwk","message":"Found 2 games","found":[{"game":"rotwk","dir":"/home/me/Games/RotWK"}]}
+{"ok":false,"kind":"usage","error":"unknown game \"doom\" (use bfme1, bfme2, …)"}
+```
+
+`pct` is 0–100, or `null` when Beacon can't tell. `game` is `null` for commands that aren't about one game.
+
+| Command | Long job | Result fields besides `ok`, `game`, `message` |
+|---|---|---|
+| `scan [folders]` | yes | `found: [{game, dir}]`, `installed: [<game>]` |
+| `set-path <game> <folder or exe>` | | `path` |
+| `set-key <game> [--clear]` | | `has_cd_key`. The key is read from **stdin**, one line, never from the command line |
+| `set-runner <game\|default> <runner id\|auto>` | | `runner` (`null`: automatic), `default` |
+| `resolution <game> <WxH\|clear>` | | `resolution` |
+| `windowed <game> <on\|off>` | | `windowed` |
+| `edition <game> <id\|auto>` | | `chosen`, `edition` (the name of the one that launches) |
+| `add-files <game> <step> <path>` | yes | `step`, `done`, and `edition` (or `exit_code` for an installer step) |
+| `virtual-desktop <game> <on\|off\|default>` | | `virtual_desktop`, `choice` |
+| `via-steam <game> <on\|off>` | | `via_steam`, `steam_copy` |
+| `args <game> -- <arguments>` | | `extra_args` (put `--` first, so arguments starting with `-` aren't read as Beacon's) |
+| `add-mod <game> <path> [--name N] [--select]` | | `mod` (as in `mods`), `selected` |
+| `find-mods [folders]` | yes | `added: [mod]` |
+| `remove-mod <id>` | | `removed` |
+| `select-mod <game> <id\|none>` | | `selected` |
+| `setup <game> [--force]` | yes | `did_work`, `options_file` |
+| `run <game> <exe>` / `run <game> --tool` | yes | `exit_code`, `found`, `installed` |
+| `launch <game> [--wait]` | | `pid`, `log`, and `exit_code` with `--wait` |
+
+`run` runs an installer or patch inside the game's prefix (the game doesn't have to be installed yet: that's how a
+game's own installer is run), then scans for what it installed. `--tool` runs the game's `tool_launcher` (AotR's own
+launcher). When the program closes with an error, the result is `{"ok":false,"kind":"program","exit_code":N,…}`.
+
+### Exit codes
+
+| Code | Meaning | `kind` |
+|---|---|---|
+| 0 | Done | |
+| 1 | It didn't work; `error` says why | `failed` |
+| 2 | Bad arguments: an unknown game, mod, runner, edition or step, or a malformed value | `usage` |
+| 3 | The Windows program Beacon ran (installer, patch, launcher) closed with an error | `program` |
 
 ## Hearth integration
 
 - `beacon-app --fullscreen` (or `BEACON_FULLSCREEN=1`) opens it full-screen for Game Mode.
 - Beacon minimizes while a game runs and comes back when the game exits.
-- `beacon status --json` and `beacon launch <game>` let Hearth list the three games and start them directly.
+- `beacon status --json` and `beacon launch <game>` let Hearth list the games and start them directly. Since 0.0.6
+  Hearth also sets games up, changes their settings and manages mods through the JSON commands above, so everything
+  Beacon does is in Hearth's Library; Beacon's own window is for outside Hearth.
 - `BEACON_CONFIG` and `BEACON_DATA_DIR` move the config file and data folder.
 
 ## Good to know

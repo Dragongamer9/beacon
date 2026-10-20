@@ -16,6 +16,7 @@ pub mod games;
 pub mod mods;
 pub mod options_ini;
 pub mod registry;
+pub mod report;
 pub mod runner;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -70,6 +71,33 @@ pub struct GameStatus {
     /// No errors (warnings are fine).
     pub ready: bool,
     pub issues: Vec<Issue>,
+    // ---- 0.0.6: what a front end (Hearth) needs to show the right settings.
+    /// BFME games: resolution goes into Options.ini, `-win` and `-mod` apply.
+    #[serde(default)]
+    pub sage: bool,
+    /// The game's registry carries a CD key (BFME, BFME II, RotWK).
+    #[serde(default)]
+    pub wants_cd_key: bool,
+    /// Another game that must be set up too (RotWK needs BFME II).
+    #[serde(default)]
+    pub requires: Option<GameId>,
+    /// The player's virtual-desktop choice (`None` = the game's default).
+    #[serde(default)]
+    pub virtual_desktop_choice: Option<bool>,
+    /// The game's default for the virtual desktop.
+    #[serde(default)]
+    pub virtual_desktop_default: bool,
+    /// Whether `setup` has work to do (`None` when it can't tell yet: no folder or no runner).
+    #[serde(default)]
+    pub needs_setup: Option<bool>,
+    /// The game's log file, and whether there's one yet.
+    #[serde(default)]
+    pub log_file: PathBuf,
+    #[serde(default)]
+    pub has_log: bool,
+    /// The game has community versions (editions and/or setup steps).
+    #[serde(default)]
+    pub has_community: bool,
 }
 
 /// A catalog entry plus the id of the matching installed mod, if any.
@@ -171,9 +199,24 @@ impl Beacon {
 
     /// Scan for installs; games without a folder get the first one found.
     pub fn scan(&mut self, extra_roots: &[PathBuf]) -> Vec<FoundGame> {
+        self.scan_with(extra_roots, &mut |_: usize, _: usize, _: &Path| {})
+    }
+
+    /// `scan`, telling `progress` about each folder before it's searched:
+    /// (index, number of folders, folder).
+    pub fn scan_with(&mut self, extra_roots: &[PathBuf], progress: &mut dyn FnMut(usize, usize, &Path)) -> Vec<FoundGame> {
         let mut roots = self.scan_roots();
         roots.extend(extra_roots.iter().cloned());
-        let found = games::scan(&roots, 9);
+        let mut found: Vec<FoundGame> = Vec::new();
+        for (i, root) in roots.iter().enumerate() {
+            progress(i, roots.len(), root);
+            for f in games::scan(std::slice::from_ref(root), 9) {
+                if !found.contains(&f) {
+                    found.push(f);
+                }
+            }
+        }
+        found.sort_by(|a, b| a.game.cmp(&b.game).then(a.dir.cmp(&b.dir)));
         for f in &found {
             let cfg = self.game_mut(f.game);
             let current_ok = cfg.path.as_deref().map(|p| games::find_exe_in(p, f.game).is_some()).unwrap_or(false);
@@ -240,6 +283,8 @@ impl Beacon {
             }
         }
         let selected_mod = self.config.selected_mod.get(&g).cloned().filter(|id| self.find_mod(g, id).is_some());
+        let needs_setup = if installed && runner.is_some() && !self.via_steam(g) { self.needs_setup(g).ok() } else { None };
+        let log_file = self.paths.log_file(g);
         GameStatus {
             id: g,
             family: g.family(),
@@ -262,6 +307,15 @@ impl Beacon {
             tool_launcher: if g == GameId::Aotr { self.aotr_bundled().launcher } else { None },
             ready: !issues.iter().any(|i| i.level == Level::Error),
             issues,
+            sage: g.is_sage(),
+            wants_cd_key: g.wants_cd_key(),
+            requires: g.requires(),
+            virtual_desktop_choice: if g.is_sage() { None } else { cfg.virtual_desktop },
+            virtual_desktop_default: !g.is_sage() && g.default_virtual_desktop(),
+            needs_setup,
+            has_log: log_file.is_file(),
+            log_file,
+            has_community: !editions::editions(g).is_empty() || !editions::steps(g).is_empty(),
         }
     }
 
@@ -341,6 +395,11 @@ impl Beacon {
     /// merged into the game folder or added under Mods, with replaced files
     /// backed up to `<data>/backups/<game>/<time>/`. Returns a summary.
     pub fn add_files(&mut self, g: GameId, step_id: &str, source: &Path) -> Result<String> {
+        self.add_files_with(g, step_id, source, &mut |_: &str| {})
+    }
+
+    /// `add_files`, telling `progress` what it's doing (extracting, copying).
+    pub fn add_files_with(&mut self, g: GameId, step_id: &str, source: &Path, progress: &mut dyn FnMut(&str)) -> Result<String> {
         let step = editions::steps(g).into_iter().find(|s| s.id == step_id).ok_or_else(|| anyhow!("{} has no step {step_id}", g.short()))?;
         let dir = self.game_dir(g).ok_or_else(|| anyhow!("set {}'s game folder first", g.short()))?;
         if !source.exists() {
@@ -355,6 +414,7 @@ impl Beacon {
                 .map(|e| ["zip", "7z", "rar", "tar", "gz", "tgz", "xz", "bz2"].iter().any(|x| e.eq_ignore_ascii_case(x)))
                 .unwrap_or(false);
         let root = if is_archive {
+            progress(&format!("Extracting {}", source.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
             editions::extract(source, &tmp)?;
             editions::content_root(&tmp)
         } else if source.is_dir() {
@@ -362,6 +422,10 @@ impl Beacon {
         } else {
             source.to_path_buf()
         };
+        progress(match step.action {
+            editions::Action::Mods => "Adding it under the game's Mods folder",
+            _ => "Copying files into the game folder (anything replaced is backed up first)",
+        });
 
         let result = (|| -> Result<String> {
             match step.action {
@@ -441,11 +505,25 @@ impl Beacon {
     /// Search the usual places for known mods already on disk and link
     /// the ones Beacon doesn't have yet. Returns what was added.
     pub fn find_mods(&mut self, extra_roots: &[PathBuf]) -> Vec<ModEntry> {
+        self.find_mods_with(extra_roots, &mut |_: usize, _: usize, _: &Path| {})
+    }
+
+    /// `find_mods`, telling `progress` about each folder before it's searched.
+    pub fn find_mods_with(&mut self, extra_roots: &[PathBuf], progress: &mut dyn FnMut(usize, usize, &Path)) -> Vec<ModEntry> {
         let game_dirs: Vec<PathBuf> = GameId::ALL.into_iter().filter_map(|g| self.game_dir(g)).collect();
         let mut roots = catalog::default_mod_roots(&self.paths.home, &game_dirs);
         roots.extend(extra_roots.iter().cloned());
+        let mut discovered: Vec<ModEntry> = Vec::new();
+        for (i, root) in roots.iter().enumerate() {
+            progress(i, roots.len(), root);
+            for m in catalog::discover(std::slice::from_ref(root), 4) {
+                if !discovered.iter().any(|d| d.path == m.path) {
+                    discovered.push(m);
+                }
+            }
+        }
         let mut added = Vec::new();
-        for m in catalog::discover(&roots, 4) {
+        for m in discovered {
             let known = GameId::ALL.into_iter().flat_map(|g| self.mods(g)).any(|k| k.path == m.path || k.id == m.id);
             if !known {
                 self.config.linked_mods.push(m.clone());
@@ -601,6 +679,18 @@ impl Beacon {
         let marker = SetupMarker { fingerprint: self.setup_fingerprint(g, &reg)? };
         std::fs::write(self.paths.prefix_root(g).join("beacon-setup.json"), serde_json::to_string(&marker)?)?;
         Ok(true)
+    }
+
+    /// Before running an installer or patch in the game's prefix: set the
+    /// prefix up when the game is there to set up. A game that's still being
+    /// installed has no folder yet (its registry can't be written), so its
+    /// prefix is simply created by the installer's own run.
+    pub fn prepare_prefix(&self, g: GameId) -> Result<bool> {
+        std::fs::create_dir_all(self.paths.prefix_root(g))?;
+        if self.via_steam(g) || self.registry_for(g).is_err() {
+            return Ok(false);
+        }
+        self.setup(g, false)
     }
 
     /// Write the chosen resolution into Options.ini inside the prefix.
@@ -1027,6 +1117,71 @@ mod tests {
         e.beacon.add_files(GameId::Uaw, "xliveless", &x).unwrap();
         assert_eq!(fs::read(uaw.join("xlive.dll")).unwrap(), b"new");
         assert!(e.beacon.add_files(GameId::Uaw, "patch3", &x).is_err(), "installers run, not merge");
+    }
+
+    #[test]
+    fn status_tells_front_ends_what_applies() {
+        let mut e = env();
+        let mut seen = Vec::new();
+        e.beacon.scan_with(&[], &mut |i: usize, n: usize, root: &Path| seen.push((i, n, root.to_path_buf())));
+        assert!(!seen.is_empty() && seen.iter().all(|(i, n, _)| i < n), "{seen:?}");
+        assert!(seen.iter().any(|(_, _, r)| r.ends_with("Games")));
+
+        let st = e.beacon.status(GameId::Bfme2);
+        assert!(st.sage && st.wants_cd_key && st.requires.is_none());
+        assert_eq!(st.needs_setup, Some(true));
+        assert!(!st.has_log && st.log_file.ends_with("logs/bfme2.log"));
+        assert!(!st.has_community && st.virtual_desktop_choice.is_none() && !st.virtual_desktop_default);
+        assert_eq!(e.beacon.status(GameId::Rotwk).requires, Some(GameId::Bfme2));
+        assert!(e.beacon.setup(GameId::Bfme2, false).unwrap());
+        let st = e.beacon.status(GameId::Bfme2);
+        assert_eq!(st.needs_setup, Some(false));
+        assert!(st.has_log, "setup writes the log");
+
+        let swgb = e.beacon.status(GameId::Swgb);
+        assert!(!swgb.sage && !swgb.wants_cd_key && swgb.has_community && swgb.virtual_desktop_default);
+        assert_eq!(swgb.needs_setup, None, "not installed");
+        e.beacon.game_mut(GameId::Swgb).virtual_desktop = Some(false);
+        assert_eq!(e.beacon.status(GameId::Swgb).virtual_desktop_choice, Some(false));
+
+        // The new fields are in the JSON, and old JSON without them still reads.
+        let v = serde_json::to_value(e.beacon.status(GameId::Bfme2)).unwrap();
+        for k in ["sage", "wants_cd_key", "requires", "virtual_desktop_choice", "virtual_desktop_default", "needs_setup", "log_file", "has_log", "has_community"] {
+            assert!(v.get(k).is_some(), "{k} missing");
+        }
+        let mut old = v.as_object().unwrap().clone();
+        for k in ["sage", "wants_cd_key", "requires", "virtual_desktop_choice", "virtual_desktop_default", "needs_setup", "log_file", "has_log", "has_community"] {
+            old.remove(k);
+        }
+        let back: GameStatus = serde_json::from_value(serde_json::Value::Object(old)).unwrap();
+        assert!(!back.sage);
+    }
+
+    #[test]
+    fn installers_run_before_the_game_is_there() {
+        let e = env();
+        // Conquest isn't installed yet: its prefix can't get registry keys, but an
+        // installer must still be able to run in it.
+        assert!(e.beacon.registry_for(GameId::Conquest).is_err());
+        assert!(!e.beacon.prepare_prefix(GameId::Conquest).unwrap());
+        assert!(e.beacon.paths.prefix_root(GameId::Conquest).is_dir());
+        let exe = e.games.join("setup.exe");
+        fs::write(&exe, b"").unwrap();
+        assert!(e.beacon.run_in_prefix_command(GameId::Conquest, &exe).is_ok());
+    }
+
+    #[test]
+    fn add_files_reports_progress() {
+        let mut e = env();
+        let uaw = e.games.join("Universe at War Earth Assault");
+        fs::create_dir_all(&uaw).unwrap();
+        fs::write(uaw.join("UAWEA.exe"), b"").unwrap();
+        e.beacon.scan(&[]);
+        let x = e.games.join("xlive.dll");
+        fs::write(&x, b"x").unwrap();
+        let mut said = Vec::new();
+        e.beacon.add_files_with(GameId::Uaw, "xliveless", &x, &mut |t: &str| said.push(t.to_string())).unwrap();
+        assert!(said.iter().any(|t| t.starts_with("Copying files")), "{said:?}");
     }
 
     #[test]
