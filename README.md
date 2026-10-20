@@ -327,7 +327,7 @@ cd src-tauri && cargo tauri build    # app + AppImage/deb/rpm in target/release/
 
 On Windows (Rust stable with the MSVC toolchain, Node for the Tauri CLI): `cargo build --release -p beacon-cli` gives
 `target\release\beacon.exe`, and `cargo tauri build --bundles nsis,msi` (in `src-tauri`) the installers, with
-`tauri.windows.conf.json` adding `beacon.exe` next to `beacon-app.exe`.
+`windows-bundle.conf.json` (passed with `--config` at packaging time) adding `beacon.exe` next to `beacon-app.exe`.
 
 The Build workflow (`.github/workflows/build.yml`) does all of this on every push and pull request: `build-linux`
 (Ubuntu 22.04) and `build-windows` (windows-latest) each test and package; the `release` job makes one GitHub Release
