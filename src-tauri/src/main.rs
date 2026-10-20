@@ -4,6 +4,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use beacon_core::{
+    aio_launcher::LauncherStatus,
     games::GameId,
     media,
     mods::ModEntry,
@@ -42,6 +43,8 @@ struct Snapshot {
     native: bool,
     /// Where to get the BFME All-in-One launcher.
     aio_url: &'static str,
+    /// The All-in-One launcher itself: installed?, where.
+    aio_launcher: LauncherStatus,
 }
 
 fn snapshot(state: &AppState) -> Snapshot {
@@ -57,6 +60,7 @@ fn snapshot(state: &AppState) -> Snapshot {
         running: state.running.lock().unwrap().iter().copied().collect(),
         native: b.native,
         aio_url: beacon_core::aio::LAUNCHER_URL,
+        aio_launcher: b.launcher_status(),
     }
 }
 
@@ -72,7 +76,16 @@ fn mutate(state: &AppState, f: impl FnOnce(&mut Beacon) -> anyhow::Result<()>) -
 
 #[tauri::command]
 fn get_state(state: State<AppState>) -> Snapshot {
+    adopt_launcher_games(&state);
     snapshot(&state)
+}
+
+/// Games the All-in-One launcher downloaded since the last look (cheap; no full scan).
+fn adopt_launcher_games(state: &AppState) {
+    let mut b = state.beacon.lock().unwrap();
+    if !b.adopt_launcher_games().is_empty() {
+        let _ = b.save();
+    }
 }
 
 #[tauri::command]
@@ -265,7 +278,58 @@ async fn workshop_install(app: AppHandle, game: GameId, id: String) -> CmdResult
 /// Games the BFME All-in-One launcher manages, and where to get it.
 #[tauri::command]
 fn aio_info(state: State<AppState>) -> serde_json::Value {
+    adopt_launcher_games(&state);
     beacon_core::report::aio(&state.beacon.lock().unwrap())
+}
+
+#[derive(Clone, Serialize)]
+struct LauncherProgress {
+    pct: Option<u8>,
+    text: String,
+}
+
+/// Download the All-in-One launcher from the BFME Foundation and install it (Linux: in its own
+/// prefix). Progress arrives as `aio-launcher-progress` events. Never downloads the games.
+#[tauri::command]
+async fn aio_launcher_install(app: AppHandle) -> CmdResult<(Snapshot, String)> {
+    let b = app.state::<AppState>().beacon.lock().unwrap().clone();
+    let app2 = app.clone();
+    let done = tauri::async_runtime::spawn_blocking(move || {
+        b.install_launcher(&workshop::Net::new(), &mut |pct: Option<u8>, text: &str| {
+            let _ = app2.emit("aio-launcher-progress", LauncherProgress { pct, text: text.to_string() });
+        })
+    })
+    .await
+    .map_err(err)?
+    .map_err(|e| format!("{e:#}"))?;
+    let state = app.state::<AppState>();
+    let msg = if done.verified {
+        "All-in-One launcher installed".to_string()
+    } else {
+        "All-in-One launcher installed (its published checksum couldn't be read, so it wasn't compared)".to_string()
+    };
+    Ok((snapshot(&state), msg))
+}
+
+/// Start the All-in-One launcher. When it closes, Beacon looks for the games it downloaded and
+/// sends `aio-launcher-closed`.
+#[tauri::command]
+fn aio_launcher_open(app: AppHandle, state: State<AppState>) -> CmdResult<Snapshot> {
+    let mut child = state.beacon.lock().unwrap().open_launcher().map_err(|e| format!("{e:#}"))?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+        let state = app.state::<AppState>();
+        {
+            let mut b = state.beacon.lock().unwrap();
+            if b.adopt_launcher_games().is_empty() {
+                // Installed somewhere else (another drive letter, say): a full look.
+                b.scan(&[]);
+            }
+            let _ = b.save();
+        }
+        let _ = app.emit("aio-launcher-closed", ());
+    });
+    Ok(snapshot(&state))
 }
 
 #[tauri::command]
@@ -525,6 +589,8 @@ fn main() {
             workshop_list,
             workshop_install,
             aio_info,
+            aio_launcher_install,
+            aio_launcher_open,
             launch_preview,
             pick_folder,
             pick_file,

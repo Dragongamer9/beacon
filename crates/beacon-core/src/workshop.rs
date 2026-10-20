@@ -298,6 +298,12 @@ pub trait Http {
     fn get_json(&self, url: &str, query: &[(&str, String)]) -> Result<Value>;
     /// GET a file into `out`, at most `max` bytes, calling `progress(bytes so far)`.
     fn download(&self, url: &str, out: &mut dyn Write, max: u64, progress: &mut dyn FnMut(u64)) -> Result<u64>;
+    /// GET a short text answer, at most `max` bytes (through `download`: https only).
+    fn get_text(&self, url: &str, max: u64) -> Result<String> {
+        let mut buf: Vec<u8> = Vec::new();
+        self.download(url, &mut buf, max, &mut |_: u64| {})?;
+        String::from_utf8(buf).map_err(|_| anyhow!("the answer from {url} isn't text"))
+    }
 }
 
 /// The real thing: ureq over rustls, https only, with timeouts.
@@ -327,8 +333,8 @@ impl Default for Net {
 
 fn http_err(e: ureq::Error) -> anyhow::Error {
     match e {
-        ureq::Error::Status(code, _) => anyhow!("the workshop answered HTTP {code}"),
-        ureq::Error::Transport(t) => anyhow!("couldn't reach the workshop: {t}"),
+        ureq::Error::Status(code, _) => anyhow!("bfmeladder.com answered HTTP {code}"),
+        ureq::Error::Transport(t) => anyhow!("couldn't reach bfmeladder.com: {t}"),
     }
 }
 

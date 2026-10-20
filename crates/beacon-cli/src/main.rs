@@ -142,6 +142,21 @@ enum Cmd {
     },
     /// Games the BFME All-in-One launcher installed, and where to get the launcher.
     Aio,
+    /// The BFME All-in-One launcher itself: status, install (from the BFME Foundation's official download), open.
+    AioLauncher {
+        #[command(subcommand)]
+        action: LauncherAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum LauncherAction {
+    /// Is it installed, and where.
+    Status,
+    /// Download the launcher from the BFME Foundation and install it (Linux: in its own Wine prefix). Never the games.
+    Install,
+    /// Start it (Linux: in its prefix, through the runner). Download the games there; `status` and `scan` find them.
+    Open,
 }
 
 // ---------------------------------------------------------------- errors and output
@@ -306,6 +321,10 @@ fn main() {
 fn run(ctx: &Ctx, b: &mut Beacon, cmd: Cmd) -> Result<Value> {
     Ok(match cmd {
         Cmd::Status => {
+            // Games the All-in-One launcher downloaded since the last look.
+            if !b.adopt_launcher_games().is_empty() {
+                b.save()?;
+            }
             if !ctx.json {
                 print_status(b);
             }
@@ -746,10 +765,18 @@ fn run(ctx: &Ctx, b: &mut Beacon, cmd: Cmd) -> Result<Value> {
             )
         }
         Cmd::Aio => {
+            if !b.adopt_launcher_games().is_empty() {
+                b.save()?;
+            }
             if !ctx.json {
                 let games = b.aio_games();
+                let launcher = b.launcher_status();
+                match &launcher.path {
+                    Some(p) => println!("All-in-One launcher: {}", p.display()),
+                    None => println!("All-in-One launcher: not installed — `beacon aio-launcher install` gets it from the BFME Foundation ({}).", aio::LAUNCHER_URL),
+                }
                 if games.is_empty() {
-                    println!("No games from the BFME All-in-One launcher found. Get it at {} (Windows; under Linux, run it with `beacon run <game> <launcher.exe>`).", aio::LAUNCHER_URL);
+                    println!("No games from the BFME All-in-One launcher found yet. Download them in the launcher (`beacon aio-launcher open`); Beacon finds them afterwards.");
                 }
                 for a in &games {
                     println!("{} — {}", a.game.short(), a.dir.display());
@@ -763,6 +790,48 @@ fn run(ctx: &Ctx, b: &mut Beacon, cmd: Cmd) -> Result<Value> {
             }
             report::aio(b)
         }
+        Cmd::AioLauncher { action } => match action {
+            LauncherAction::Status => {
+                let st = b.launcher_status();
+                if !ctx.json {
+                    match &st.path {
+                        Some(p) => {
+                            println!("Installed: {}", p.display());
+                            if let Some(pfx) = &st.prefix {
+                                println!("Prefix:    {}", pfx.display());
+                            }
+                        }
+                        None if st.can_install => println!("Not installed. `beacon aio-launcher install` downloads it from the BFME Foundation ({}).", st.site),
+                        None => println!("Not installed. It runs through Wine here: install GE-Proton, umu-launcher or Wine first."),
+                    }
+                }
+                report::launcher(b)
+            }
+            LauncherAction::Install => {
+                let done = b.install_launcher(&workshop::Net::new(), &mut |p: Option<u8>, t: &str| ctx.progress(p, t))?;
+                ctx.say(format!("Installed the All-in-One launcher at {}{}", done.path.display(), if done.verified { "" } else { " (the published checksum couldn't be read, so it wasn't compared)" }));
+                ctx.say("Open it with `beacon aio-launcher open` and download the games there; Beacon finds them afterwards.");
+                report::ok(
+                    None,
+                    "All-in-One launcher installed",
+                    json!({
+                        "path": report::path(&done.path),
+                        "prefix": done.prefix.as_deref().map(report::path),
+                        "bytes": done.bytes,
+                        "md5": done.md5,
+                        "verified": done.verified,
+                        "launcher": report::launcher(b),
+                    }),
+                )
+            }
+            LauncherAction::Open => {
+                let child = b.open_launcher()?;
+                let log = b.launcher_log();
+                ctx.say(format!("Started the All-in-One launcher (pid {}). Download the games there; `beacon status` finds them afterwards. Log: {}", child.id(), log.display()));
+                let path = b.launcher_exe();
+                report::ok(None, "Started the All-in-One launcher", json!({"pid": child.id(), "log": report::path(&log), "path": path.as_deref().map(report::path)}))
+            }
+        },
         Cmd::Paths => {
             if !ctx.json {
                 println!("config:   {}", b.paths.config_file.display());
@@ -823,6 +892,10 @@ mod tests {
         assert!(matches!(parse(&["beacon", "workshop", "rotwk", "--search", "edain", "--page", "2"]).cmd, Some(Cmd::Workshop { page: 2, .. })));
         assert!(matches!(parse(&["beacon", "workshop-install", "rotwk", "abc", "--select"]).cmd, Some(Cmd::WorkshopInstall { select: true, .. })));
         assert!(matches!(parse(&["beacon", "aio", "--json"]).cmd, Some(Cmd::Aio)));
+        assert!(matches!(parse(&["beacon", "aio-launcher", "status", "--json"]).cmd, Some(Cmd::AioLauncher { action: LauncherAction::Status })));
+        assert!(matches!(parse(&["beacon", "--json", "aio-launcher", "install"]).cmd, Some(Cmd::AioLauncher { action: LauncherAction::Install })));
+        assert!(matches!(parse(&["beacon", "aio-launcher", "open"]).cmd, Some(Cmd::AioLauncher { action: LauncherAction::Open })));
+        assert!(Cli::try_parse_from(["beacon", "aio-launcher"]).is_err());
         assert!(Cli::try_parse_from(["beacon", "workshop-install", "rotwk"]).is_err());
     }
 
@@ -846,6 +919,14 @@ mod tests {
         let v = go(&mut t, &["aio"]).unwrap();
         assert_eq!(v["launcher_url"], "https://bfmeladder.com");
         assert!(v["games"].as_array().unwrap().is_empty());
+        assert_eq!(v["launcher"]["installed"], false);
+        assert!(v["launcher"]["path"].is_null());
+        let l = go(&mut t, &["aio-launcher", "status"]).unwrap();
+        assert_eq!(l, v["launcher"]);
+        // Not installed: open fails (exit 1) without starting anything.
+        let r = go(&mut t, &["aio-launcher", "open"]);
+        assert_eq!(exit_code(&r), 1);
+        assert!(error_json(r.as_ref().unwrap_err())["error"].as_str().unwrap().contains("isn't installed"));
         let s = go(&mut t, &["status"]).unwrap();
         assert_eq!(s[8]["store_url"], "https://store.steampowered.com/app/356500/");
     }

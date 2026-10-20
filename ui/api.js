@@ -27,7 +27,7 @@ function mockApi() {
     ...extra,
   });
   const state = {
-    version: "0.0.6 (preview)",
+    version: "0.0.7 (preview)",
     games: [
       mk("bfme1", "The Battle for Middle-earth", "BFME", "/home/you/Games/BFME1"),
       mk("bfme2", "The Battle for Middle-earth II", "BFME II", "/home/you/Games/BFME2", { has_cd_key: false, issues: [{ level: "warn", message: "No CD key set. Add the key from your copy if the game asks you to reinstall." }] }),
@@ -42,6 +42,10 @@ function mockApi() {
     runners, default_runner: null, best_runner: runners[0].id,
     mods_dir: "/home/you/.local/share/beacon/mods", data_dir: "/home/you/.local/share/beacon", running: [],
     native: false, aio_url: "https://bfmeladder.com",
+    aio_launcher: {
+      installed: false, path: null, prefix: "/home/you/.local/share/beacon/prefixes/aio-launcher/pfx", version: null, by_beacon: false, can_install: true, runner: runners[0].id,
+      download_url: "https://arena-files.bfmeladder.com/application-builds/all-in-one-launcher-main", site: "https://bfmeladder.com", log: "/home/you/.local/share/beacon/logs/aio-launcher.log",
+    },
   };
   const workshopItems = {
     rotwk: [
@@ -175,7 +179,19 @@ function mockApi() {
       it.installed = m.id;
       return [snap(), `${it.name} ${it.version} installed`];
     },
-    aio_info: () => ({ launcher_url: "https://bfmeladder.com", games: [], appdata: [] }),
+    aio_info: () => ({ launcher_url: "https://bfmeladder.com", games: [], appdata: [], launcher: structuredClone(state.aio_launcher) }),
+    aio_launcher_install: async () => {
+      for (const [pct, text] of [[5, "Creating the launcher's Wine prefix (the first time can take a few minutes)"], [null, "Downloading the All-in-One launcher from the BFME Foundation… 40 MB"], [null, "Downloading the All-in-One launcher from the BFME Foundation… 180 MB"], [96, "Installing the launcher"]]) {
+        emit("aio-launcher-progress", { pct, text });
+        await delay(500);
+      }
+      Object.assign(state.aio_launcher, { installed: true, by_beacon: true, path: "/home/you/.local/share/beacon/prefixes/aio-launcher/pfx/drive_c/users/steamuser/AppData/Roaming/BFME All In One Launcher/AllInOneLauncher.exe", version: "0123456789abcdef0123456789abcdef" });
+      return [snap(), "All-in-One launcher installed"];
+    },
+    aio_launcher_open: () => {
+      setTimeout(() => emit("aio-launcher-closed", null), 5000);
+      return snap();
+    },
     open_url: () => null,
     pick_folder: async () => { await delay(200); return "/home/you/Games/Picked"; },
     pick_file: async ({ kind }) => { await delay(200); return kind === "mod" ? "/home/you/Downloads/Some Mod.big" : "/home/you/Downloads/patch.exe"; },
