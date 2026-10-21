@@ -564,3 +564,7 @@ no runner. Beacon never downloads a community launcher.
 - **LAN** works through Wine's normal networking. Online play is out of scope for now.
 - **The registry key set is the minimum** the games are known to read. If a particular game version wants more, there's one place to add it: `registry.rs`.
 - **Per-game environment variables** (for example `DXVK_HUD=fps` or `WINEDEBUG`) go in the `env` map of that game's entry in `~/.config/beacon/config.json`.
+
+## License
+
+Beacon is free software, licensed under the **GNU General Public License v3.0 or later** ([LICENSE](LICENSE)). The games it launches, and the community launchers it can set up, belong to their owners and keep their own terms: Beacon never ships or downloads the games themselves.
