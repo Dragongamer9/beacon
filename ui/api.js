@@ -34,7 +34,7 @@ function mockApi() {
       mk("rotwk", "The Rise of the Witch-king", "RotWK", "/home/you/Games/RotWK", { selected_mod: "rotwk:age-of-the-ring" }),
       mk("aotr", "Age of the Ring", "AotR", null, { has_cd_key: false, tool_launcher: null }),
       mk("conquest", "The Lord of the Rings: Conquest", "Conquest", "/home/you/Games/LOTR Conquest", { family: "lotr", has_cd_key: false, resolution: null }),
-      mk("uaw", "Universe at War: Earth Assault", "UaW", "/home/you/Games/Universe at War Earth Assault", { family: "other", resolution: null, issues: [{ level: "warn", message: "Games for Windows Live is gone: put the community xliveless xlive.dll in the game folder (campaign and skirmish only)." }] }),
+      mk("uaw", "Universe at War: Earth Assault", "UaW", "/home/you/Games/Universe at War Earth Assault", { family: "other", resolution: null, issues: [{ level: "warn", message: "Games for Windows Live is gone: put the community xliveless xlive.dll in the game folder (campaign and skirmish only)." }], community_launcher: { path: null, url: "https://drive.google.com/drive/folders/167UET84ZWXrMd9zpxEYiQWTQZexCGZfT" } }),
       mk("exigo", "Armies of Exigo", "Exigo", null, { family: "other", resolution: null }),
       mk("rol", "Rise of Nations: Rise of Legends", "RoL", "/home/you/Games/Rise of Legends", { family: "other", resolution: null }),
       mk("swgb", "Star Wars: Galactic Battlegrounds Saga", "SWGB", "/home/you/.local/share/Steam/steamapps/common/Star Wars Galactic Battlegrounds Saga/Game", { family: "other", resolution: null, virtual_desktop: true, steam_appid: 356500, store_url: "https://store.steampowered.com/app/356500/", edition: "Clone Campaigns", issues: [{ level: "warn", message: "Community version not set up yet — Game settings → Community version walks you through it." }] }),
@@ -192,9 +192,21 @@ function mockApi() {
       setTimeout(() => emit("aio-launcher-closed", null), 5000);
       return snap();
     },
+    community_launcher_set: async ({ game: g, path }) => {
+      await delay(600);
+      const name = path.split("/").pop().replace(/\.(zip|exe)$/i, "");
+      game(g).community_launcher.path = `/home/you/.local/share/beacon/tools/${g}-launcher/${name}/${name}.exe`;
+      return [snap(), `${game(g).short} launcher set: ${name}.exe`];
+    },
+    community_launcher_open: async ({ game: g }) => {
+      emit("community-launcher-progress", { game: g, pct: 10, text: "Creating UaW's Wine prefix (the first time can take a few minutes)" });
+      await delay(800);
+      setTimeout(() => emit("community-launcher-closed", { game: g, found: false }), 5000);
+      return snap();
+    },
     open_url: () => null,
     pick_folder: async () => { await delay(200); return "/home/you/Games/Picked"; },
-    pick_file: async ({ kind }) => { await delay(200); return kind === "mod" ? "/home/you/Downloads/Some Mod.big" : "/home/you/Downloads/patch.exe"; },
+    pick_file: async ({ kind }) => { await delay(200); return kind === "mod" ? "/home/you/Downloads/Some Mod.big" : kind === "launcher" ? "/home/you/Downloads/UaW Launcher 1.3.zip" : "/home/you/Downloads/patch.exe"; },
     open_path: () => null,
     open_log: () => null,
   };

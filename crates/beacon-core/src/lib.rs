@@ -16,6 +16,7 @@
 pub mod aio;
 pub mod aio_launcher;
 pub mod catalog;
+pub mod community_launcher;
 pub mod config;
 pub mod editions;
 pub mod games;
@@ -111,6 +112,11 @@ pub struct GameStatus {
     /// The game's Steam store page, for games still sold there (only SWGB).
     #[serde(default)]
     pub store_url: Option<String>,
+    // ---- 0.0.7
+    /// The game's community launcher (only UaW so far): `{path, url}`, `path` = the launcher exe the player
+    /// chose (`null` until then), `url` = where it's downloaded from. Left out for games without one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub community_launcher: Option<community_launcher::LauncherRef>,
 }
 
 /// A catalog entry plus the id of the matching installed mod, if any.
@@ -416,6 +422,7 @@ impl Beacon {
             log_file,
             has_community: !editions::editions(g).is_empty() || !editions::steps(g).is_empty(),
             store_url: g.store_url().map(str::to_string),
+            community_launcher: self.community_launcher_ref(g),
         }
     }
 

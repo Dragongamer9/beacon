@@ -56,6 +56,9 @@ pub struct GameConfig {
     pub edition: Option<String>,
     /// Community-version setup steps the player has completed.
     pub done_steps: Vec<String>,
+    /// The game's community launcher exe the player chose (a copy under
+    /// `<data>/tools/<game>-launcher/<name>/`); see [`crate::community_launcher`].
+    pub community_launcher: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -226,5 +229,23 @@ mod tests {
         c.save(&p).unwrap();
         assert_eq!(Config::load(&p).unwrap(), c);
         assert_eq!(Config::load(&t.path().join("missing.json")).unwrap(), Config::default());
+    }
+
+    #[test]
+    fn community_launcher_roundtrip() {
+        let t = tempfile::tempdir().unwrap();
+        let p = t.path().join("config.json");
+        let mut c = Config::default();
+        let exe = t.path().join("data/tools/uaw-launcher/UaW Launcher 1.2/UaWLauncher.exe");
+        c.games.entry(GameId::Uaw).or_default().community_launcher = Some(exe.clone());
+        c.save(&p).unwrap();
+        let back = Config::load(&p).unwrap();
+        assert_eq!(back, c);
+        assert_eq!(back.games[&GameId::Uaw].community_launcher.as_deref(), Some(exe.as_path()));
+        // Configs written before the field existed still load.
+        std::fs::write(&p, r#"{"games": {"uaw": {"path": "/g/UaW", "windowed": false}}}"#).unwrap();
+        let old = Config::load(&p).unwrap();
+        assert_eq!(old.games[&GameId::Uaw].community_launcher, None);
+        assert_eq!(old.games[&GameId::Uaw].path.as_deref(), Some(Path::new("/g/UaW")));
     }
 }

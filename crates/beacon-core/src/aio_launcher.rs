@@ -184,14 +184,14 @@ fn uninstall_values() -> Vec<RegValue> {
 }
 
 /// Is there a user folder in the prefix yet (made by `wineboot`)?
-fn prefix_has_user(pfx: &Path) -> bool {
+pub(crate) fn prefix_has_user(pfx: &Path) -> bool {
     std::fs::read_dir(pfx.join("drive_c").join("users"))
         .map(|rd| rd.flatten().any(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false) && !e.file_name().to_string_lossy().eq_ignore_ascii_case("public")))
         .unwrap_or(false)
 }
 
 /// Wait for a child, killing it after `limit`.
-fn wait_with_timeout(child: &mut std::process::Child, limit: Duration) -> Result<std::process::ExitStatus> {
+pub(crate) fn wait_with_timeout(child: &mut std::process::Child, limit: Duration) -> Result<std::process::ExitStatus> {
     let start = Instant::now();
     loop {
         if let Some(st) = child.try_wait()? {
