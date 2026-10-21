@@ -87,7 +87,7 @@ pub fn paths(b: &Beacon) -> Value {
         .into_iter()
         .map(|g| {
             let v = json!({
-                "prefix": path(&b.paths.prefix_root(g)),
+                "prefix": path(&b.run_root(g)),
                 "log": path(&b.paths.log_file(g)),
                 "mods": path(&b.paths.mods_dir().join(g.slug())),
             });

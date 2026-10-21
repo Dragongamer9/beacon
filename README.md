@@ -411,6 +411,8 @@ beacon workshop-install rotwk <id> --select
 beacon aio                               # games the BFME All-in-One launcher installed
 beacon aio-launcher install              # get the All-in-One launcher (from the BFME Foundation; never the games)
 beacon aio-launcher open                 # start it, download the games there; `beacon status` finds them
+beacon aio-launcher get bfme1            # install a game through it: opens it, waits while you install the game there,
+                                         # then closes it (Linux) and adds the game (since 0.0.8)
 beacon community-launcher uaw status     # UaW's community launcher: where to get it, which one is chosen
 beacon community-launcher uaw set ~/Downloads/UaW_Launcher.zip   # a launcher you downloaded (.exe or .zip)
 beacon community-launcher uaw open       # start it (Linux: in UaW's prefix); `beacon status` finds the game
@@ -519,6 +521,7 @@ is one JSON object:
 | `workshop-install <game> <id> [--select]` | yes | `id`, `name`, `version`, `kind`, `dir`, `files`, `bytes`, `skipped`, `mod` (as in `mods`), `selected` (since 0.0.6) |
 | `aio-launcher install` | yes | `path`, `prefix` (Linux; else `null`), `bytes`, `md5`, `verified` (the MD5 matched the published one), `launcher` (as in `aio-launcher status`) (since 0.0.7) |
 | `aio-launcher open` | | `pid`, `log`, `path` (since 0.0.7). It starts detached; download the games there, then `status` finds them |
+| `aio-launcher get <game>` | yes | `ready`, `dir`, `closed_launcher`, `installed_launcher` (since 0.0.8). Installs the launcher if needed, opens it and waits (up to 6 hours) until the launcher has synced that game (its `BFME Workshop\Config\active_patch_<n>` files), then closes it (Linux) and adds the game. The launcher downloads the game, never Beacon |
 | `community-launcher <game> set <path>` | yes | `path` (Beacon's copy of the launcher exe), `community_launcher` (as in `community-launcher <game> status`) (since 0.0.7) |
 | `community-launcher <game> open` | yes | `pid`, `log`, `path`, `prefix` (Linux; else `null`) (since 0.0.7). Progress lines while the game's prefix is prepared; then it starts detached. Download the game there, then `status` finds it |
 

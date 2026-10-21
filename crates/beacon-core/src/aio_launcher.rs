@@ -65,6 +65,15 @@ pub const PREFIX_DIR: &str = "aio-launcher";
 pub const MAX_BYTES: u64 = 1 << 30;
 /// Smallest: anything less is an error page, not the launcher.
 pub const MIN_BYTES: u64 = 1 << 20;
+/// How often `get_with_launcher` looks at the launcher's config, and how long it lets it finish writing.
+#[cfg(not(test))]
+const POLL: Duration = Duration::from_secs(3);
+#[cfg(not(test))]
+const SETTLE: Duration = Duration::from_secs(5);
+#[cfg(test)]
+const POLL: Duration = Duration::from_millis(50);
+#[cfg(test)]
+const SETTLE: Duration = Duration::from_millis(50);
 /// Creating the prefix: umu's first run also downloads the Steam Linux Runtime.
 const PREFIX_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 
@@ -181,6 +190,62 @@ fn uninstall_values() -> Vec<RegValue> {
 #[cfg(not(windows))]
 fn uninstall_values() -> Vec<RegValue> {
     Vec::new()
+}
+
+/// Where the launcher is with a game, read from its workshop config
+/// (`%APPDATA%\BFME Workshop\Config`): it writes `active_patch_<n>.syncing`
+/// while it downloads and `active_patch_<n>.json` once the game is synced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SyncState {
+    /// Not started (nothing for that game yet).
+    None,
+    /// Downloading or updating.
+    Syncing,
+    /// Synced: the game is ready.
+    Done,
+}
+
+/// The game's state from the launcher's config folder (any of `appdatas`).
+pub fn sync_state(appdatas: &[PathBuf], g: GameId) -> SyncState {
+    let Some(i) = crate::aio::game_index(g) else { return SyncState::None };
+    let mut done = false;
+    for a in appdatas {
+        let cfg = crate::aio::workshop_dir(a).join("Config");
+        if cfg.join(format!("active_patch_{i}.syncing")).is_file() {
+            return SyncState::Syncing;
+        }
+        done |= cfg.join(format!("active_patch_{i}.json")).is_file();
+    }
+    if done { SyncState::Done } else { SyncState::None }
+}
+
+/// Is an All-in-One launcher process running (Linux: any process whose command line names its exe)?
+fn launcher_running() -> bool {
+    #[cfg(unix)]
+    {
+        let needle = EXE_NAME.to_ascii_lowercase();
+        return std::fs::read_dir("/proc").into_iter().flatten().flatten().any(|e| {
+            e.file_name().to_string_lossy().bytes().all(|b| b.is_ascii_digit())
+                && std::fs::read(e.path().join("cmdline")).map(|b| String::from_utf8_lossy(&b).to_ascii_lowercase().contains(&needle)).unwrap_or(false)
+        });
+    }
+    #[allow(unreachable_code)]
+    false
+}
+
+/// What `get_with_launcher` ended with.
+#[derive(Debug, Clone, Serialize)]
+pub struct GetOutcome {
+    pub game: GameId,
+    /// The game is installed and in Beacon's list.
+    pub ready: bool,
+    /// Its folder, when it's there.
+    pub dir: Option<PathBuf>,
+    /// Beacon closed the launcher itself (false: the player closed it, or on Windows, where it runs as administrator).
+    pub closed_launcher: bool,
+    /// Beacon installed the launcher first.
+    pub installed_launcher: bool,
 }
 
 /// Is there a user folder in the prefix yet (made by `wineboot`)?
@@ -419,6 +484,122 @@ impl Beacon {
             Err(e) if e.raw_os_error() == Some(crate::native::ERROR_ELEVATION_REQUIRED) => crate::native::spawn_elevated(&self.paths.data_dir, &cmd),
             Err(e) => Err(e).with_context(|| format!("starting {}", cmd.program.display())),
         }
+    }
+
+    /// Is this game one the launcher installed in Beacon's launcher prefix (Linux)? Those run in that prefix, with
+    /// the registry the launcher wrote (CD key included): Beacon's own prefix for the game would have none, and
+    /// the game sits on its splash screen.
+    pub fn launcher_owns(&self, g: GameId) -> bool {
+        !self.native && self.game_dir(g).map(|d| d.starts_with(self.launcher_prefix().join("drive_c"))).unwrap_or(false)
+    }
+
+    /// The prefix root a game runs in: the launcher's for its games, else the game's own.
+    pub fn run_root(&self, g: GameId) -> PathBuf {
+        if self.launcher_owns(g) { self.launcher_prefix_root() } else { self.paths.prefix_root(g) }
+    }
+
+    /// The launcher's state for a game (see [`sync_state`]).
+    pub fn launcher_sync_state(&self, g: GameId) -> SyncState {
+        let appdatas: Vec<PathBuf> = if self.native {
+            self.paths.appdata.clone().into_iter().collect()
+        } else {
+            vec![options_ini::appdata_dir(&self.launcher_prefix())]
+        };
+        sync_state(&appdatas, g)
+    }
+
+    /// Close the launcher Beacon started: its process group, then (Linux) whatever is left in its prefix
+    /// (`wineboot -k`). Only while no game runs from that prefix.
+    fn close_launcher(&self, child: &mut std::process::Child) {
+        #[cfg(unix)]
+        {
+            let _ = std::process::Command::new("kill").args(["-TERM", &format!("-{}", child.id())]).status();
+            let t = Instant::now();
+            while t.elapsed() < Duration::from_secs(10) {
+                if matches!(child.try_wait(), Ok(Some(_))) { break; }
+                std::thread::sleep(Duration::from_millis(250));
+            }
+            let _ = child.kill();
+            let _ = child.wait();
+            if let Some(runner) = self.launcher_runner() {
+                let cwd = self.launcher_prefix_root();
+                let cmd = runner::command_for(runner, self.runners.umu.as_deref(), &self.paths.home, &cwd, "wineboot", &["-k".into()], &cwd);
+                if let Ok(mut c) = cmd.to_std().stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn() {
+                    let _ = wait_with_timeout(&mut c, Duration::from_secs(60));
+                }
+            }
+        }
+        #[cfg(not(unix))]
+        let _ = child;
+    }
+
+    /// "Install" for a BFME game, done by the launcher: install the launcher if needed, open it, and watch its
+    /// config until the game is synced. Then (Linux) Beacon closes the launcher, picks the game up and returns.
+    /// The player picks the game (and where it goes) in the launcher; Beacon never downloads the game itself.
+    /// Returns early if the player closes the launcher. `progress(pct, text)` reports along the way.
+    pub fn get_with_launcher(&mut self, g: GameId, http: &dyn Http, limit: Duration, progress: &mut dyn FnMut(Option<u8>, &str)) -> Result<GetOutcome> {
+        if crate::aio::game_index(g).is_none() {
+            bail!("{} doesn't come from the All-in-One launcher (only BFME, BFME II and RotWK do)", g.short());
+        }
+        let mut installed_launcher = false;
+        if self.launcher_exe().is_none() {
+            self.install_launcher(http, progress)?;
+            installed_launcher = true;
+        }
+        let was_done = self.launcher_sync_state(g) == SyncState::Done && self.game_dir(g).is_some();
+        if was_done {
+            progress(Some(100), "Already installed");
+            return Ok(GetOutcome { game: g, ready: true, dir: self.game_dir(g), closed_launcher: false, installed_launcher });
+        }
+        progress(None, &format!("Opening the All-in-One launcher: choose {} there and press Install", g.title()));
+        let mut child = self.open_launcher()?;
+        let start = Instant::now();
+        let mut seen_sync = false;
+        let mut last = SyncState::None;
+        let mut gone = 0u32;
+        let outcome = loop {
+            std::thread::sleep(POLL);
+            let st = self.launcher_sync_state(g);
+            if st != last {
+                match st {
+                    SyncState::Syncing => progress(None, &format!("The launcher is downloading {}", g.title())),
+                    SyncState::Done => progress(Some(99), &format!("{} is downloaded; finishing up", g.title())),
+                    SyncState::None => {}
+                }
+                last = st;
+            }
+            seen_sync |= st == SyncState::Syncing;
+            // Done after a download seen here, or done with the game's files there (a quick sync).
+            if st == SyncState::Done && (seen_sync || { self.adopt_launcher_games(); self.game_dir(g).is_some() }) {
+                // Give the launcher a moment to write its last files.
+                std::thread::sleep(SETTLE);
+                let closed = !self.native;
+                if closed {
+                    progress(Some(99), "Closing the launcher");
+                    self.close_launcher(&mut child);
+                }
+                break closed;
+            }
+            if matches!(child.try_wait(), Ok(Some(_))) {
+                // The player closed it. (On Linux it can also restart itself after updating: only gone for good
+                // when no launcher process is left a few seconds later.)
+                gone += 1;
+                if self.native || (gone >= 3 && !launcher_running()) {
+                    break false;
+                }
+            }
+            if start.elapsed() > limit {
+                bail!("the launcher didn't finish {} within {} hours", g.title(), limit.as_secs() / 3600);
+            }
+        };
+        self.adopt_launcher_games();
+        if self.game_dir(g).is_none() {
+            self.scan(&[]);
+        }
+        let dir = self.game_dir(g);
+        let ready = dir.is_some() && self.launcher_sync_state(g) == SyncState::Done;
+        progress(Some(100), if ready { "Installed" } else { "The launcher closed before the game was installed" });
+        Ok(GetOutcome { game: g, ready, dir, closed_launcher: outcome, installed_launcher })
     }
 
     /// BFME games the launcher installed that Beacon has no folder for yet:
@@ -711,5 +892,93 @@ mod tests {
         fresh.paths.data_dir = b.paths.data_dir.clone();
         let found = fresh.scan(&[]);
         assert!(found.iter().any(|f| f.game == GameId::Rotwk && f.dir == c.join("RotWK")), "{found:?}");
+    }
+
+    #[test]
+    fn launcher_sync_states() {
+        let t = tempfile::tempdir().unwrap();
+        let a = t.path().join("AppData");
+        let cfg = a.join("BFME Workshop/Config");
+        assert_eq!(sync_state(&[a.clone()], GameId::Bfme1), SyncState::None);
+        fs::create_dir_all(&cfg).unwrap();
+        fs::write(cfg.join("active_patch_0.json"), "{}").unwrap();
+        assert_eq!(sync_state(&[a.clone()], GameId::Bfme1), SyncState::Done);
+        assert_eq!(sync_state(&[a.clone()], GameId::Bfme2), SyncState::None);
+        fs::write(cfg.join("active_patch_0.syncing"), "").unwrap();
+        assert_eq!(sync_state(&[a.clone()], GameId::Bfme1), SyncState::Syncing, "an update in progress");
+        assert_eq!(sync_state(&[a], GameId::Uaw), SyncState::None);
+    }
+
+    /// The launcher's games run in its prefix, with its registry (and the CD key it made up): no Beacon prefix,
+    /// no Beacon registry. (In Beacon's own prefix BFME sat on its splash screen: no `ergc`.)
+    #[test]
+    fn launcher_games_run_in_its_prefix() {
+        use std::os::unix::fs::PermissionsExt;
+        let t = tempfile::tempdir().unwrap();
+        let bin = t.path().join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        let wine = bin.join("wine");
+        fs::write(&wine, "#!/bin/sh\nexit 0\n").unwrap();
+        fs::set_permissions(&wine, fs::Permissions::from_mode(0o755)).unwrap();
+        let mut b = Beacon::load_with(Paths::under(&t.path().join("beacon"), &t.path().join("home")), &bin.to_string_lossy()).unwrap();
+        b.native = false;
+        let pfx = b.launcher_prefix();
+        let game = pfx.join("drive_c/BFME1");
+        fs::create_dir_all(&game).unwrap();
+        fs::write(game.join("lotrbfme.exe"), b"").unwrap();
+        fs::create_dir_all(pfx.join("drive_c/users/tester/AppData/Roaming")).unwrap();
+        b.adopt_launcher_games();
+        assert!(b.launcher_owns(GameId::Bfme1));
+        assert_eq!(b.run_root(GameId::Bfme1), b.launcher_prefix_root());
+        assert!(!b.needs_setup(GameId::Bfme1).unwrap());
+        assert!(!b.setup(GameId::Bfme1, true).unwrap(), "nothing written over the launcher's registry");
+        let c = b.launch_command(GameId::Bfme1, Some("")).unwrap();
+        assert!(c.env.contains(&("WINEPREFIX".to_string(), pfx.to_string_lossy().into_owned())), "{c:?}");
+        assert!(c.args[0].ends_with("BFME1/lotrbfme.exe"));
+        // Options.ini goes where the launcher's game reads it.
+        b.game_mut(GameId::Bfme1).resolution = Some(crate::Resolution { width: 1280, height: 800 });
+        let ini = b.apply_options(GameId::Bfme1).unwrap().unwrap();
+        assert!(ini.starts_with(pfx.join("drive_c/users/tester/AppData/Roaming/My Battle for Middle-earth Files")), "{ini:?}");
+        // A game elsewhere keeps its own prefix.
+        assert!(!b.launcher_owns(GameId::Bfme2));
+        assert_eq!(b.run_root(GameId::Bfme2), b.paths.prefix_root(GameId::Bfme2));
+    }
+
+    /// `get`: the launcher (a stub that "installs" BFME the way the real one leaves it) is opened, Beacon sees the
+    /// game synced, closes the launcher's prefix and adds the game.
+    #[test]
+    fn get_through_the_launcher() {
+        use std::os::unix::fs::PermissionsExt;
+        let t = tempfile::tempdir().unwrap();
+        let bin = t.path().join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        let wine = bin.join("wine");
+        let script = "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$WINEPREFIX/../calls.txt\"\n\
+case \"$1\" in *AllInOneLauncher.exe) \
+  mkdir -p \"$WINEPREFIX/drive_c/BFME1\" \"$WINEPREFIX/drive_c/users/tester/AppData/Roaming/BFME Workshop/Config\"; \
+  : > \"$WINEPREFIX/drive_c/BFME1/lotrbfme.exe\"; \
+  echo '{}' > \"$WINEPREFIX/drive_c/users/tester/AppData/Roaming/BFME Workshop/Config/active_patch_0.json\";; \
+esac\n";
+        fs::write(&wine, script).unwrap();
+        fs::set_permissions(&wine, fs::Permissions::from_mode(0o755)).unwrap();
+        let mut b = Beacon::load_with(Paths::under(&t.path().join("beacon"), &t.path().join("home")), &bin.to_string_lossy()).unwrap();
+        b.native = false;
+        // The launcher is already installed.
+        let dir = b.launcher_prefix().join("drive_c/users/tester/AppData/Roaming").join(APP_DIR_NAME);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(EXE_NAME), b"MZ").unwrap();
+        let fake = Fake { hash: None, body: build(), asked: RefCell::new(vec![]) };
+        assert!(b.get_with_launcher(GameId::Uaw, &fake, Duration::from_secs(5), &mut |_: Option<u8>, _: &str| {}).is_err());
+        let mut said = vec![];
+        let out = b.get_with_launcher(GameId::Bfme1, &fake, Duration::from_secs(20), &mut |_: Option<u8>, t: &str| said.push(t.to_string())).unwrap();
+        assert!(out.ready && out.closed_launcher && !out.installed_launcher, "{out:?} {said:?}");
+        assert_eq!(out.dir.as_deref(), Some(b.launcher_prefix().join("drive_c/BFME1").as_path()));
+        assert!(fake.asked.borrow().is_empty(), "nothing downloaded: the launcher was there");
+        let calls = fs::read_to_string(b.launcher_prefix_root().join("calls.txt")).unwrap();
+        assert!(calls.lines().any(|l| l == "wineboot -k"), "{calls}");
+        // Again: already there, the launcher isn't opened.
+        let again = b.get_with_launcher(GameId::Bfme1, &fake, Duration::from_secs(5), &mut |_: Option<u8>, _: &str| {}).unwrap();
+        assert!(again.ready && !again.closed_launcher);
+        assert_eq!(fs::read_to_string(b.launcher_prefix_root().join("calls.txt")).unwrap(), calls);
     }
 }
