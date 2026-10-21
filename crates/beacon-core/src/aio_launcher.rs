@@ -513,7 +513,16 @@ impl Beacon {
     fn close_launcher(&self, child: &mut std::process::Child) {
         #[cfg(unix)]
         {
-            let _ = std::process::Command::new("kill").args(["-TERM", &format!("-{}", child.id())]).status();
+            // Its own process group (open_launcher starts it with one): the group goes, never anything else.
+            // Only while it's still running, and only when the group really is its own.
+            extern "C" {
+                fn kill(pid: i32, sig: i32) -> i32;
+                fn getpgid(pid: i32) -> i32;
+            }
+            let pid = child.id() as i32;
+            if pid > 1 && matches!(child.try_wait(), Ok(None)) && unsafe { getpgid(pid) } == pid {
+                unsafe { kill(-pid, 15) };
+            }
             let t = Instant::now();
             while t.elapsed() < Duration::from_secs(10) {
                 if matches!(child.try_wait(), Ok(Some(_))) { break; }
@@ -911,6 +920,7 @@ mod tests {
 
     /// The launcher's games run in its prefix, with its registry (and the CD key it made up): no Beacon prefix,
     /// no Beacon registry. (In Beacon's own prefix BFME sat on its splash screen: no `ergc`.)
+    #[cfg(unix)]
     #[test]
     fn launcher_games_run_in_its_prefix() {
         use std::os::unix::fs::PermissionsExt;
@@ -946,6 +956,7 @@ mod tests {
 
     /// `get`: the launcher (a stub that "installs" BFME the way the real one leaves it) is opened, Beacon sees the
     /// game synced, closes the launcher's prefix and adds the game.
+    #[cfg(unix)]
     #[test]
     fn get_through_the_launcher() {
         use std::os::unix::fs::PermissionsExt;
