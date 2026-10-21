@@ -173,6 +173,12 @@ enum LauncherAction {
     Install,
     /// Start it (Linux: in its prefix, through the runner). Download the games there; `status` and `scan` find them.
     Open,
+    /// Install a game through it: install the launcher if needed, open it, wait while you install the game there,
+    /// then close it (Linux) and add the game. The launcher downloads the game, never Beacon.
+    Get {
+        /// bfme1, bfme2 or rotwk.
+        game: String,
+    },
 }
 
 // ---------------------------------------------------------------- errors and output
@@ -853,6 +859,23 @@ fn run(ctx: &Ctx, b: &mut Beacon, cmd: Cmd) -> Result<Value> {
                 let path = b.launcher_exe();
                 report::ok(None, "Started the All-in-One launcher", json!({"pid": child.id(), "log": report::path(&log), "path": path.as_deref().map(report::path)}))
             }
+            LauncherAction::Get { game: name } => {
+                let g = game(&name)?;
+                if aio::game_index(g).is_none() {
+                    return Err(usage(format!("{} doesn't come from the All-in-One launcher (only bfme1, bfme2 and rotwk)", g.short())));
+                }
+                ctx.say(format!("Opening the All-in-One launcher: install {} there. Beacon waits and adds it when it's done.", g.title()));
+                let out = b.get_with_launcher(g, &workshop::Net::new(), std::time::Duration::from_secs(6 * 3600), &mut |p: Option<u8>, t: &str| ctx.progress(p, t))?;
+                b.save()?;
+                let msg = if out.ready { format!("{} is installed", g.title()) } else { format!("{} wasn't installed (the launcher was closed first)", g.title()) };
+                ctx.say(&msg);
+                report::ok(Some(g), msg, json!({
+                    "ready": out.ready,
+                    "dir": out.dir.as_deref().map(report::path),
+                    "closed_launcher": out.closed_launcher,
+                    "installed_launcher": out.installed_launcher,
+                }))
+            }
         },
         Cmd::CommunityLauncher { game: g, action } => {
             let g = game(&g)?;
@@ -907,7 +930,7 @@ fn run(ctx: &Ctx, b: &mut Beacon, cmd: Cmd) -> Result<Value> {
                             "pid": child.id(),
                             "log": report::path(&log),
                             "path": path.as_deref().map(report::path),
-                            "prefix": (!b.native).then(|| report::path(&b.paths.prefix_root(g).join("pfx"))),
+                            "prefix": (!b.native).then(|| report::path(&b.run_root(g).join("pfx"))),
                         }),
                     )
                 }

@@ -403,7 +403,7 @@ impl Beacon {
             resolution: cfg.resolution,
             windowed: cfg.windowed,
             extra_args: cfg.extra_args.clone(),
-            prefix_ready: !self.native && self.paths.prefix_root(g).join("pfx/drive_c").is_dir(),
+            prefix_ready: !self.native && self.run_root(g).join("pfx/drive_c").is_dir(),
             virtual_desktop: self.virtual_desktop(g),
             steam_appid: self.steam_appid(g),
             via_steam: self.via_steam(g),
@@ -743,7 +743,7 @@ impl Beacon {
 
     fn command(&self, g: GameId, target: &str, args: &[String], cwd: &Path) -> Result<Command> {
         let runner = self.require_runner(g)?;
-        let mut cmd = runner::command_for(runner, self.runners.umu.as_deref(), &self.paths.home, &self.paths.prefix_root(g), target, args, cwd);
+        let mut cmd = runner::command_for(runner, self.runners.umu.as_deref(), &self.paths.home, &self.run_root(g), target, args, cwd);
         for (k, v) in &self.game(g).env {
             cmd.env.retain(|(ek, _)| ek != k);
             cmd.env.push((k.clone(), v.clone()));
@@ -756,8 +756,9 @@ impl Beacon {
     }
 
     pub fn needs_setup(&self, g: GameId) -> Result<bool> {
-        if self.native {
-            // No prefix; the game's installer (or the All-in-One launcher) wrote its registry.
+        if self.native || self.launcher_owns(g) {
+            // No prefix of Beacon's: the game's installer (or the All-in-One launcher, in its own prefix) wrote its
+            // registry, with the CD key it made up; Beacon's would have none.
             return Ok(false);
         }
         let reg = self.registry_for(g)?;
@@ -785,7 +786,7 @@ impl Beacon {
     /// Create the prefix if needed and import the registry keys.
     /// Returns true if it did any work.
     pub fn setup(&self, g: GameId, force: bool) -> Result<bool> {
-        if self.native || self.via_steam(g) || (!force && !self.needs_setup(g)?) {
+        if self.native || self.launcher_owns(g) || self.via_steam(g) || (!force && !self.needs_setup(g)?) {
             return Ok(false);
         }
         let cmd = self.setup_command(g)?;
@@ -836,11 +837,13 @@ impl Beacon {
             let leaf = if cfg!(windows) { installs::user_data_leaf(&installs::windows_registry(), g) } else { None };
             appdata.join(leaf.unwrap_or_else(|| g.user_data_leaf().to_string()))
         } else {
-            let pfx = self.paths.prefix_root(g).join("pfx");
+            let pfx = self.run_root(g).join("pfx");
             if !pfx.join("drive_c").is_dir() {
                 return Ok(None);
             }
-            options_ini::appdata_dir(&pfx).join(g.user_data_leaf())
+            // The launcher's prefix names its own leaf (BFME II's and RotWK's differ from EA's).
+            let leaf = if self.launcher_owns(g) { installs::user_data_leaf(&installs::prefix_registry(&pfx), g) } else { None };
+            options_ini::appdata_dir(&pfx).join(leaf.unwrap_or_else(|| g.user_data_leaf().to_string()))
         };
         std::fs::create_dir_all(&dir)?;
         let file = dir.join("Options.ini");
