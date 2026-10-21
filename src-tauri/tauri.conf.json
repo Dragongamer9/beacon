@@ -29,6 +29,8 @@
     "active": true,
     "targets": ["appimage", "deb", "rpm"],
     "category": "StrategyGame",
+    "license": "GPL-3.0-or-later",
+    "licenseFile": "../LICENSE",
     "shortDescription": "Launcher for BFME, LOTR and other classic strategy games on Linux and Windows",
     "longDescription": "Beacon is a controller-first launcher for Linux and Windows for The Lord of the Rings: The Battle for Middle-earth I and II, The Rise of the Witch-king, Age of the Ring, The Lord of the Rings: Conquest and a few classic strategy games (Universe at War, Armies of Exigo, Rise of Legends, Star Wars: Galactic Battlegrounds). It finds your installs (including the BFME All-in-One launcher's), installs from your own discs or disc images, gives each game its own Wine or Proton prefix on Linux with the registry keys it needs, sets the resolution and manages mods, including fan content from the BFME workshop. It includes the beacon command-line tool. The games are not included.",
     "homepage": "https://github.com/Dragongamer9/beacon",
