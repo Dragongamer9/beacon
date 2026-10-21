@@ -134,6 +134,12 @@ pub fn launcher(b: &Beacon) -> Value {
     value(&b.launcher_status())
 }
 
+/// `community-launcher <game> status`: `{game, url, path, missing, can_open, prefix, runner, tools_dir, log,
+/// game_installed}` (since 0.0.7); `None` for games without a community launcher.
+pub fn community_launcher(b: &Beacon, g: GameId) -> Option<Value> {
+    b.community_launcher_status(g).map(|s| value(&s))
+}
+
 /// The end of a text file: at most `max_bytes`, starting at a whole line.
 fn tail(file: &Path, max_bytes: u64) -> Option<String> {
     use std::io::{Read, Seek, SeekFrom};
@@ -373,6 +379,24 @@ mod tests {
         assert_eq!(s[8]["id"], "swgb");
         assert_eq!(s[8]["store_url"], "https://store.steampowered.com/app/356500/");
         assert!(s[0]["store_url"].is_null());
+    }
+
+    #[test]
+    fn community_launcher_shapes() {
+        let (_t, b) = beacon();
+        let v = community_launcher(&b, GameId::Uaw).unwrap();
+        assert_eq!(keys(&v), ["can_open", "game", "game_installed", "log", "missing", "path", "prefix", "runner", "tools_dir", "url"]);
+        assert_eq!(v["game"], "uaw");
+        assert!(v["url"].as_str().unwrap().starts_with("https://drive.google.com/"));
+        assert!(v["path"].is_null() && v["can_open"] == false && v["missing"] == false);
+        assert!(community_launcher(&b, GameId::Rotwk).is_none());
+        // In `status`: `{path, url}` for UaW only; left out for the others.
+        let s = status(&b);
+        assert_eq!(s[5]["id"], "uaw");
+        assert_eq!(keys(&s[5]["community_launcher"]), ["path", "url"]);
+        assert_eq!(s[5]["community_launcher"]["url"], v["url"]);
+        assert!(s[5]["community_launcher"]["path"].is_null());
+        assert!(s[2].get("community_launcher").is_none());
     }
 
     #[test]

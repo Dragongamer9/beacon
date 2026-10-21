@@ -5,7 +5,7 @@
 //! "For Hearth / scripting"). Without it, the output is for people, as before.
 
 use anyhow::Result;
-use beacon_core::{aio, editions, games::GameId, media, mods::ModKind, report, workshop, Beacon, Level, Resolution};
+use beacon_core::{aio, community_launcher, editions, games::GameId, media, mods::ModKind, report, workshop, Beacon, Level, Resolution};
 use clap::{Parser, Subcommand};
 use serde_json::{json, Value};
 use std::io::{BufRead, IsTerminal, Write};
@@ -147,6 +147,22 @@ enum Cmd {
         #[command(subcommand)]
         action: LauncherAction,
     },
+    /// A game's community launcher (Universe at War): status, set (a launcher you downloaded), open.
+    CommunityLauncher {
+        game: String,
+        #[command(subcommand)]
+        action: CommunityAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum CommunityAction {
+    /// Which launcher is chosen, where it's downloaded from.
+    Status,
+    /// Use a launcher you downloaded: its .exe (copied) or the .zip it came in (extracted). Beacon never downloads it.
+    Set { path: PathBuf },
+    /// Start it (Linux: in the game's own Wine prefix). Download the game there; `status` and `scan` find it.
+    Open,
 }
 
 #[derive(Subcommand)]
@@ -321,8 +337,14 @@ fn main() {
 fn run(ctx: &Ctx, b: &mut Beacon, cmd: Cmd) -> Result<Value> {
     Ok(match cmd {
         Cmd::Status => {
-            // Games the All-in-One launcher downloaded since the last look.
-            if !b.adopt_launcher_games().is_empty() {
+            // Games the All-in-One launcher (or a game's community launcher) downloaded since the last look.
+            let mut adopted = !b.adopt_launcher_games().is_empty();
+            for g in GameId::ALL {
+                if b.game(g).community_launcher.is_some() && !b.adopt_community_games(g).is_empty() {
+                    adopted = true;
+                }
+            }
+            if adopted {
                 b.save()?;
             }
             if !ctx.json {
@@ -832,6 +854,65 @@ fn run(ctx: &Ctx, b: &mut Beacon, cmd: Cmd) -> Result<Value> {
                 report::ok(None, "Started the All-in-One launcher", json!({"pid": child.id(), "log": report::path(&log), "path": path.as_deref().map(report::path)}))
             }
         },
+        Cmd::CommunityLauncher { game: g, action } => {
+            let g = game(&g)?;
+            let url = community_launcher::launcher_url(g).ok_or_else(|| usage(format!("{} has no community launcher (only uaw has one)", g.short())))?;
+            match action {
+                CommunityAction::Status => {
+                    if b.game(g).community_launcher.is_some() && !b.adopt_community_games(g).is_empty() {
+                        b.save()?;
+                    }
+                    let st = b.community_launcher_status(g).ok_or_else(|| usage(format!("{} has no community launcher", g.short())))?;
+                    if !ctx.json {
+                        match (&st.path, st.missing) {
+                            (Some(p), _) => println!("{} launcher: {}", g.short(), p.display()),
+                            (None, true) => println!("The {} launcher you chose is gone; choose it again with `beacon community-launcher {} set <path>`.", g.short(), g.slug()),
+                            (None, false) => println!("No {} launcher chosen yet.", g.short()),
+                        }
+                        println!("Get it: {url}");
+                        println!("{}", community_launcher::HOW_TO);
+                        if let Some(pfx) = &st.prefix {
+                            println!("Runs in: {}", pfx.display());
+                        }
+                    }
+                    report::community_launcher(b, g).unwrap_or(Value::Null)
+                }
+                CommunityAction::Set { path } => {
+                    let abs = std::path::absolute(&path).map_err(|e| usage(format!("{} isn't a usable path: {e}", path.display())))?;
+                    community_launcher::validate_source(&abs).map_err(|e| usage(format!("{e:#}")))?;
+                    let exe = b.set_community_launcher(g, &abs, &mut |t: &str| ctx.progress(None, t))?;
+                    b.save()?;
+                    ctx.say(format!("{} launcher: {}", g.short(), exe.display()));
+                    ctx.say(format!("Open it with `beacon community-launcher {} open` and download the game there; Beacon finds it afterwards.", g.slug()));
+                    report::ok(
+                        Some(g),
+                        format!("{} launcher chosen", g.short()),
+                        json!({"path": report::path(&exe), "community_launcher": report::community_launcher(b, g)}),
+                    )
+                }
+                CommunityAction::Open => {
+                    let child = b.open_community_launcher(g, &mut |p: Option<u8>, t: &str| ctx.progress(p, t))?;
+                    let log = b.community_launcher_log(g);
+                    let path = b.community_launcher_exe(g);
+                    ctx.say(format!(
+                        "Started the {} launcher (pid {}). Download the game there; `beacon status` finds it afterwards. Log: {}",
+                        g.short(),
+                        child.id(),
+                        log.display()
+                    ));
+                    report::ok(
+                        Some(g),
+                        format!("Started the {} launcher", g.short()),
+                        json!({
+                            "pid": child.id(),
+                            "log": report::path(&log),
+                            "path": path.as_deref().map(report::path),
+                            "prefix": (!b.native).then(|| report::path(&b.paths.prefix_root(g).join("pfx"))),
+                        }),
+                    )
+                }
+            }
+        }
         Cmd::Paths => {
             if !ctx.json {
                 println!("config:   {}", b.paths.config_file.display());
@@ -897,6 +978,11 @@ mod tests {
         assert!(matches!(parse(&["beacon", "aio-launcher", "open"]).cmd, Some(Cmd::AioLauncher { action: LauncherAction::Open })));
         assert!(Cli::try_parse_from(["beacon", "aio-launcher"]).is_err());
         assert!(Cli::try_parse_from(["beacon", "workshop-install", "rotwk"]).is_err());
+        assert!(matches!(parse(&["beacon", "community-launcher", "uaw", "status", "--json"]).cmd, Some(Cmd::CommunityLauncher { action: CommunityAction::Status, ref game }) if game == "uaw"));
+        assert!(matches!(parse(&["beacon", "--json", "community-launcher", "uaw", "open"]).cmd, Some(Cmd::CommunityLauncher { action: CommunityAction::Open, .. })));
+        assert!(matches!(parse(&["beacon", "community-launcher", "uaw", "set", "/d/UaW Launcher.zip", "--json"]).cmd, Some(Cmd::CommunityLauncher { action: CommunityAction::Set { ref path }, .. }) if path == Path::new("/d/UaW Launcher.zip")));
+        assert!(Cli::try_parse_from(["beacon", "community-launcher", "uaw"]).is_err());
+        assert!(Cli::try_parse_from(["beacon", "community-launcher", "uaw", "set"]).is_err());
     }
 
     #[test]
@@ -929,6 +1015,40 @@ mod tests {
         assert!(error_json(r.as_ref().unwrap_err())["error"].as_str().unwrap().contains("isn't installed"));
         let s = go(&mut t, &["status"]).unwrap();
         assert_eq!(s[8]["store_url"], "https://store.steampowered.com/app/356500/");
+    }
+
+    #[test]
+    fn community_launcher_commands() {
+        let mut t = setup();
+        // Only UaW has one: a usage error for the others, an unknown game too.
+        assert_eq!(exit_code(&go(&mut t, &["community-launcher", "swgb", "status"])), 2);
+        assert_eq!(exit_code(&go(&mut t, &["community-launcher", "doom", "status"])), 2);
+        let v = go(&mut t, &["community-launcher", "uaw", "status"]).unwrap();
+        assert_eq!(v["url"], "https://drive.google.com/drive/folders/167UET84ZWXrMd9zpxEYiQWTQZexCGZfT");
+        assert!(v["path"].is_null());
+        // Nothing chosen: open fails (exit 1) without starting anything.
+        let r = go(&mut t, &["community-launcher", "uaw", "open"]);
+        assert_eq!(exit_code(&r), 1);
+        assert!(error_json(r.as_ref().unwrap_err())["error"].as_str().unwrap().contains("no UaW launcher chosen"));
+        // Only an existing .exe or .zip.
+        let txt = t.games.join("notes.txt");
+        fs::write(&txt, b"").unwrap();
+        assert_eq!(exit_code(&go(&mut t, &["community-launcher", "uaw", "set", txt.to_str().unwrap()])), 2);
+        let gone = t.games.join("gone.exe");
+        assert_eq!(exit_code(&go(&mut t, &["community-launcher", "uaw", "set", gone.to_str().unwrap()])), 2);
+        let exe = t.games.join("UaW Launcher.exe");
+        fs::write(&exe, b"MZ").unwrap();
+        let v = go(&mut t, &["community-launcher", "uaw", "set", exe.to_str().unwrap()]).unwrap();
+        assert_eq!((v["ok"].as_bool(), v["game"].as_str()), (Some(true), Some("uaw")));
+        let chosen = PathBuf::from(v["path"].as_str().unwrap());
+        assert!(chosen.starts_with(t.b.community_launcher_dir(GameId::Uaw)) && chosen.is_file());
+        assert_eq!(v["community_launcher"]["path"], v["path"]);
+        assert_eq!(t.b.game(GameId::Uaw).community_launcher.as_deref(), Some(chosen.as_path()));
+        let s = go(&mut t, &["status"]).unwrap();
+        assert_eq!(s[5]["id"], "uaw");
+        assert_eq!(s[5]["community_launcher"]["path"], v["path"]);
+        assert!(s[5]["community_launcher"]["url"].as_str().unwrap().starts_with("https://drive.google.com/"));
+        assert!(s[1].get("community_launcher").is_none());
     }
 
     struct T {

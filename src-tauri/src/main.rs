@@ -80,10 +80,17 @@ fn get_state(state: State<AppState>) -> Snapshot {
     snapshot(&state)
 }
 
-/// Games the All-in-One launcher downloaded since the last look (cheap; no full scan).
+/// Games the All-in-One launcher (or a game's community launcher) downloaded since the last look
+/// (cheap; no full scan).
 fn adopt_launcher_games(state: &AppState) {
     let mut b = state.beacon.lock().unwrap();
-    if !b.adopt_launcher_games().is_empty() {
+    let mut adopted = !b.adopt_launcher_games().is_empty();
+    for g in GameId::ALL {
+        if b.game(g).community_launcher.is_some() && !b.adopt_community_games(g).is_empty() {
+            adopted = true;
+        }
+    }
+    if adopted {
         let _ = b.save();
     }
 }
@@ -332,6 +339,70 @@ fn aio_launcher_open(app: AppHandle, state: State<AppState>) -> CmdResult<Snapsh
     Ok(snapshot(&state))
 }
 
+/// Use a community launcher the player downloaded (its .exe, or the .zip it came in). Extracting can
+/// take a moment, so it runs on a copy of the state off the main thread; the choice is folded back in.
+#[tauri::command]
+async fn community_launcher_set(app: AppHandle, game: GameId, path: String) -> CmdResult<(Snapshot, String)> {
+    let mut work = app.state::<AppState>().beacon.lock().unwrap().clone();
+    let exe = tauri::async_runtime::spawn_blocking(move || work.set_community_launcher(game, &PathBuf::from(path), &mut |_: &str| {}))
+        .await
+        .map_err(err)?
+        .map_err(|e| format!("{e:#}"))?;
+    let state = app.state::<AppState>();
+    {
+        let mut b = state.beacon.lock().unwrap();
+        b.game_mut(game).community_launcher = Some(exe.clone());
+        b.save().map_err(err)?;
+    }
+    let name = exe.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    Ok((snapshot(&state), format!("{} launcher set: {name}", game.short())))
+}
+
+#[derive(Clone, Serialize)]
+struct CommunityLauncherProgress {
+    game: GameId,
+    pct: Option<u8>,
+    text: String,
+}
+
+#[derive(Clone, Serialize)]
+struct CommunityLauncherClosed {
+    game: GameId,
+    /// The game was found after the launcher closed (it had no folder before).
+    found: bool,
+}
+
+/// Start a game's community launcher (Linux: in the game's prefix, created first when needed; progress as
+/// `community-launcher-progress`). When it closes, Beacon looks for the game it downloaded and sends
+/// `community-launcher-closed`.
+#[tauri::command]
+async fn community_launcher_open(app: AppHandle, game: GameId) -> CmdResult<Snapshot> {
+    let b = app.state::<AppState>().beacon.lock().unwrap().clone();
+    let app2 = app.clone();
+    let mut child = tauri::async_runtime::spawn_blocking(move || {
+        b.open_community_launcher(game, &mut |pct: Option<u8>, text: &str| {
+            let _ = app2.emit("community-launcher-progress", CommunityLauncherProgress { game, pct, text: text.to_string() });
+        })
+    })
+    .await
+    .map_err(err)?
+    .map_err(|e| format!("{e:#}"))?;
+    let app3 = app.clone();
+    std::thread::spawn(move || {
+        let _ = child.wait();
+        let state = app3.state::<AppState>();
+        let found = {
+            let mut b = state.beacon.lock().unwrap();
+            let found = !b.rescan_after_community_launcher(game).is_empty();
+            let _ = b.save();
+            found
+        };
+        let _ = app3.emit("community-launcher-closed", CommunityLauncherClosed { game, found });
+    });
+    let state = app.state::<AppState>();
+    Ok(snapshot(&state))
+}
+
 #[tauri::command]
 fn add_mod(state: State<AppState>, game: GameId, path: String, name: Option<String>) -> CmdResult<Snapshot> {
     mutate(&state, |b| {
@@ -487,6 +558,7 @@ async fn pick_file(app: AppHandle, kind: String) -> Option<String> {
         "mod" => d.add_filter("Mod (.big or launcher .exe)", &["big", "BIG", "exe", "EXE"]),
         "download" => d.add_filter("Download (archive, .exe or .dll)", &["zip", "ZIP", "7z", "rar", "RAR", "tar", "gz", "xz", "exe", "EXE", "dll", "DLL"]),
         "copy" => d.add_filter("Your copy (installer .exe or disc image .iso)", &["exe", "EXE", "msi", "MSI", "iso", "ISO"]),
+        "launcher" => d.add_filter("The launcher you downloaded (.exe or .zip)", &["exe", "EXE", "zip", "ZIP"]),
         _ => d.add_filter("Windows program", &["exe", "EXE", "msi", "MSI"]),
     };
     d.blocking_pick_file().and_then(|p| p.into_path().ok()).map(|p| p.to_string_lossy().into_owned())
@@ -591,6 +663,8 @@ fn main() {
             aio_info,
             aio_launcher_install,
             aio_launcher_open,
+            community_launcher_set,
+            community_launcher_open,
             launch_preview,
             pick_folder,
             pick_file,

@@ -104,6 +104,28 @@ What Beacon reads (from the launcher's source):
 `beacon aio` lists the games it manages and whether the launcher is installed; `beacon aio-launcher status` shows the
 launcher alone.
 
+## Universe at War community launcher
+
+The Universe at War community has a launcher that downloads the game. It's distributed only from
+[a Google Drive folder](https://drive.google.com/drive/folders/167UET84ZWXrMd9zpxEYiQWTQZexCGZfT) with several versions,
+no stable direct-download link and no checksums, so **Beacon never downloads it** (nor the game). On UaW's page and in
+Launcher settings:
+
+- **Get the UaW launcher** opens that folder in your browser. Download the launcher version you want, then choose it
+  below. Games are downloaded inside it; Beacon finds them afterwards.
+- **Use a launcher you downloaded** takes its `.exe` (copied) or the `.zip` it came in (extracted the same safe way as
+  disc images: bsdtar or 7-Zip, no shell, links removed, every entry checked to stay inside). Beacon keeps it in
+  `~/.local/share/beacon/tools/uaw-launcher/<name>/` (`%LOCALAPPDATA%\beacon\tools\…` on Windows) and remembers it
+  for UaW. In a `.zip`, the exe with "launcher" in its name is picked first; uninstallers, runtime installers and
+  crash reporters are skipped. It must be a Windows program (`MZ`).
+- **Open the UaW launcher** runs it: on Linux in UaW's own Wine prefix (`prefixes/uaw/pfx`, created first with
+  `wineboot` when needed) through UaW's runner, detached, logged to `logs/uaw-launcher.log`; on Windows directly
+  (through the UAC prompt when it asks for administrator rights). When it closes, Beacon looks for `UAWEA.exe` in
+  UaW's prefix (`drive_c`, and the folders its registry names) and the launcher's folder, then does a full scan if
+  that finds nothing. `beacon status` also picks it up, and the normal scan always walks Beacon's prefixes.
+
+Other games can get a community launcher the same way (one URL per game in `community_launcher.rs`).
+
 ## Workshop
 
 The **Mods** sheet of BFME, BFME II and RotWK has **Workshop**: fan-made mods, maps, add-ons and patches from the BFME
@@ -389,6 +411,9 @@ beacon workshop-install rotwk <id> --select
 beacon aio                               # games the BFME All-in-One launcher installed
 beacon aio-launcher install              # get the All-in-One launcher (from the BFME Foundation; never the games)
 beacon aio-launcher open                 # start it, download the games there; `beacon status` finds them
+beacon community-launcher uaw status     # UaW's community launcher: where to get it, which one is chosen
+beacon community-launcher uaw set ~/Downloads/UaW_Launcher.zip   # a launcher you downloaded (.exe or .zip)
+beacon community-launcher uaw open       # start it (Linux: in UaW's prefix); `beacon status` finds the game
 ```
 
 ## For Hearth / scripting
@@ -414,6 +439,7 @@ Each prints one JSON document.
 | `workshop <game> [--search S] [--page N]` | `{game, page, source, items: [{id, name, version, author, description, kind, game, size, downloads, artwork_url, installed}], hidden}` (since 0.0.6; BFME, BFME II and RotWK only) |
 | `aio` | `{launcher_url, games: [{game, dir, active_patch, active_mod}], appdata: [...], launcher}` (since 0.0.6; `launcher` since 0.0.7, as in `aio-launcher status`) |
 | `aio-launcher status` | `{installed, path, prefix, version, by_beacon, can_install, runner, download_url, site, log}` (since 0.0.7) |
+| `community-launcher <game> status` | `{game, url, path, missing, can_open, prefix, runner, tools_dir, log, game_installed}` (since 0.0.7; only `uaw` has one, other games are a `usage` error) |
 
 - **`GameStatus`:** `id, family, title, short, path, installed, runner, runner_choice, has_cd_key, resolution, windowed,
   extra_args, prefix_ready, virtual_desktop, steam_appid, via_steam, edition, selected_mod, tool_launcher, ready,
@@ -429,6 +455,10 @@ Each prints one JSON document.
     Saga has one (`https://store.steampowered.com/app/356500/`): Universe at War (Steam app 10430) was delisted in
     2014, and Armies of Exigo and Rise of Legends were never on Steam. `steam_appid` is separate: it's set for copies
     found in a Steam library.
+  Since 0.0.7 also:
+  - `community_launcher`: `{path, url}` for games with a community launcher (only Universe at War): `url` is where
+    it's downloaded from (opened in the browser, never downloaded by Beacon), `path` the launcher exe chosen with
+    `community-launcher <game> set` (`null` until then, or when it's gone). Left out for other games.
   The CD key itself is never printed, only `has_cd_key`.
 - **Values:** `kind` (mods) is `mod` or `launcher`. `kind` (catalog) is `mod`, `patch` or `game`; `installed` is the
   id of the installed mod it matches, or `null`. `kind` (runners) is `umu`, `proton` or `wine`, and on Windows
@@ -442,8 +472,15 @@ Each prints one JSON document.
   `null` when Beacon didn't install it or it has updated itself since); `by_beacon` whether Beacon installed it;
   `can_install` whether `aio-launcher install` can run (Linux needs a runner); `runner` the runner id it uses on
   Linux; `download_url` where `install` downloads it from; `log` Beacon's log for it.
+- **`community-launcher <game> status`:** `url` where it's downloaded from; `path` the chosen launcher exe (`null`
+  when none is chosen or it's gone); `missing` one was chosen but its exe is gone; `can_open` whether `open` can run
+  (a launcher is chosen and, on Linux, there's a runner); `prefix` the game's Wine prefix it runs in on Linux (`null`
+  on Windows); `runner` the game's runner id on Linux; `tools_dir` where chosen launchers are kept; `log` Beacon's log
+  for it; `game_installed` whether the game itself is found.
 - `status` and `aio` also pick up BFME games the All-in-One launcher installed since the last look (its prefix on
-  Linux, the registry on Windows) and save their folders, so Hearth needn't `scan` after the launcher.
+  Linux, the registry on Windows) and save their folders, so Hearth needn't `scan` after the launcher. `status`
+  (and `community-launcher <game> status`) does the same for a game downloaded by its community launcher (its prefix
+  and the launcher's folder), once a launcher is chosen.
 
 ### Changing things
 
@@ -482,6 +519,8 @@ is one JSON object:
 | `workshop-install <game> <id> [--select]` | yes | `id`, `name`, `version`, `kind`, `dir`, `files`, `bytes`, `skipped`, `mod` (as in `mods`), `selected` (since 0.0.6) |
 | `aio-launcher install` | yes | `path`, `prefix` (Linux; else `null`), `bytes`, `md5`, `verified` (the MD5 matched the published one), `launcher` (as in `aio-launcher status`) (since 0.0.7) |
 | `aio-launcher open` | | `pid`, `log`, `path` (since 0.0.7). It starts detached; download the games there, then `status` finds them |
+| `community-launcher <game> set <path>` | yes | `path` (Beacon's copy of the launcher exe), `community_launcher` (as in `community-launcher <game> status`) (since 0.0.7) |
+| `community-launcher <game> open` | yes | `pid`, `log`, `path`, `prefix` (Linux; else `null`) (since 0.0.7). Progress lines while the game's prefix is prepared; then it starts detached. Download the game there, then `status` finds it |
 
 `run` runs an installer or patch inside the game's prefix (the game doesn't have to be installed yet: that's how a
 game's own installer is run), then scans for what it installed. `--tool` runs the game's `tool_launcher` (AotR's own
@@ -491,7 +530,11 @@ launcher). When the program closes with an error, the result is `{"ok":false,"ki
 `usage` error. `workshop` and `workshop-install` for a game the workshop doesn't cover are `usage` errors; asking
 `workshop-install` for a base game or EA patch fails (`failed`) without contacting the server. `aio-launcher install`
 fails (`failed`) without a runner on Linux, when the download isn't the launcher or doesn't match the published MD5
-(nothing is installed then); `aio-launcher open` fails when the launcher isn't installed.
+(nothing is installed then); `aio-launcher open` fails when the launcher isn't installed. `community-launcher` for a
+game without one is a `usage` error, as is `set` with a path that isn't an existing `.exe` or `.zip` (a relative path
+is taken from the current folder); `set` fails (`failed`) when the file isn't a Windows program or a `.zip` has no
+launcher exe (nothing is changed then); `open` fails when no launcher is chosen, its copy is gone, or (Linux) there's
+no runner. Beacon never downloads a community launcher.
 
 **Windows.** The CLI is `beacon.exe` with the same commands and JSON. `runners` answers in the same shape with the
 `native` runner; `setup` reports `did_work: false`; `paths` still lists the (unused) prefix folders.

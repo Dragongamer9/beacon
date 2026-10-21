@@ -474,6 +474,7 @@ function renderGameSheet() {
   const conquest = g.id === "conquest";
   rows.innerHTML = [
     ...communityRows,
+    ...(g.community_launcher ? [`<p class="section-label">${esc(g.short)} launcher</p>`, ...communityLauncherRows(g)] : []),
     `<p class="section-label">Install</p>`,
     ...(aotr && !g.installed
       ? [
@@ -559,6 +560,7 @@ function renderGameSheet() {
   on("own-copy", "click", () => installFromCopy(g, false));
   on("own-copy-folder", "click", () => installFromCopy(g, true));
   wireAio(on);
+  wireCommunityLauncher(on, g);
   on("edition", "cycle", (e) => {
     if (installedEds.length < 2) return;
     const i = Math.max(0, installedEds.findIndex((x) => x.active));
@@ -716,6 +718,83 @@ async function refreshAfterAio(announce) {
   else if (announce) toast("The All-in-One launcher closed");
 }
 
+// A game's community launcher (Universe at War's): Beacon only opens the page it's distributed from; the player
+// downloads the version they want and picks it, Beacon keeps a copy and runs it (Linux: in the game's own prefix).
+// The game is downloaded inside it; Beacon finds it afterwards.
+const CL_HOW_TO = "Download the launcher version you want, then choose it below. Games are downloaded inside it; Beacon finds them afterwards.";
+let clBusy = null; // game id while choosing or starting its launcher
+
+function communityLauncherRows(g) {
+  const cl = g.community_launcher;
+  if (!cl) return [];
+  return [
+    rowHTML({ key: `cl-get:${g.id}`, label: `Get the ${g.short} launcher`, sub: CL_HOW_TO, value: "Open" }),
+    rowHTML({ key: `cl-set:${g.id}`, label: "Use a launcher you downloaded", sub: cl.path || "Its .exe, or the .zip it came in", value: cl.path ? "Change" : "Choose" }),
+    ...(cl.path
+      ? [
+          rowHTML({
+            key: `cl-open:${g.id}`,
+            label: `Open the ${g.short} launcher`,
+            sub: snap.native ? "Download the game there; Beacon finds it afterwards" : `Runs in ${g.short}'s own Wine prefix — download the game there; Beacon finds it afterwards`,
+            value: "Open",
+          }),
+        ]
+      : []),
+  ];
+}
+
+function wireCommunityLauncher(on, g) {
+  if (!g.community_launcher) return;
+  on(`cl-get:${g.id}`, "click", () => act(() => api.call("open_url", { url: g.community_launcher.url }), "Opened the download folder in your browser"));
+  on(`cl-set:${g.id}`, "click", () => chooseCommunityLauncher(g));
+  on(`cl-open:${g.id}`, "click", () => openCommunityLauncher(g));
+}
+
+async function chooseCommunityLauncher(g) {
+  if (clBusy) return;
+  const path = await api.call("pick_file", { kind: "launcher" });
+  if (!path) return;
+  clBusy = g.id;
+  showOverlay({ title: `Setting up the ${g.short} launcher…`, text: /\.zip$/i.test(path) ? "Extracting it into Beacon's tools folder." : "Copying it into Beacon's tools folder." });
+  try {
+    const [next, msg] = await api.call("community_launcher_set", { game: g.id, path });
+    snap = next;
+    hideOverlay();
+    render();
+    toast(`${msg} — open it to download the game`);
+  } catch (e) {
+    showOverlay({ title: `Couldn't use that ${g.short} launcher`, text: String(e?.message ?? e), error: true, ok: true });
+  }
+  clBusy = null;
+}
+
+async function openCommunityLauncher(g) {
+  if (clBusy) return;
+  clBusy = g.id;
+  showOverlay({ title: `Starting the ${g.short} launcher…`, text: snap.native ? "" : `Getting ${g.short}'s Wine prefix ready. The first time can take a few minutes.` });
+  try {
+    snap = await api.call("community_launcher_open", { game: g.id });
+    hideOverlay();
+    render();
+    toast(`Started the ${g.short} launcher — download the game there; Beacon picks it up when it closes`);
+  } catch (e) {
+    showOverlay({ title: `Couldn't start the ${g.short} launcher`, text: String(e?.message ?? e), error: true, ok: true });
+  }
+  clBusy = null;
+}
+
+function onCommunityLauncherProgress({ game: id, pct, text }) {
+  if (clBusy !== id || $("#overlay").hidden) return;
+  $("#overlay-text").textContent = pct == null ? text : `${text} (${pct}%)`;
+}
+
+async function onCommunityLauncherClosed({ game: id, found }) {
+  snap = await api.call("get_state");
+  render();
+  const g = snap.games.find((x) => x.id === id);
+  toast(found ? `Found ${g?.short ?? id} — it's ready in Beacon` : `The ${g?.short ?? id} launcher closed`);
+}
+
 // Launcher settings
 function renderLauncherSheet() {
   const keep = nav.current()?.dataset.key;
@@ -742,6 +821,7 @@ function renderLauncherSheet() {
       return `<div class="row" style="cursor:default"><span style="min-width:0"><span class="label">${esc(gg?.short ?? a.game)}${a.active_patch ? ` · ${esc(a.active_patch)}` : ""}</span><span class="sub">${esc(a.dir)}</span></span><span class="badge">Found</span></div>`;
     }),
     ...aioRows(),
+    ...snap.games.filter((x) => x.community_launcher).flatMap((x) => [`<p class="section-label">${esc(x.title)} launcher</p>`, ...communityLauncherRows(x)]),
     `<p class="section-label">Storage</p>`,
     `<button class="nav row-btn" data-key="data"><svg viewBox="0 0 24 24"><use href="#i-folder"/></svg>Open Beacon's data folder (prefixes, mods, logs)</button>`,
     `<p class="section-label">About</p>`,
@@ -757,6 +837,7 @@ function renderLauncherSheet() {
   on("defrunner", "click", (e) => e.currentTarget.dispatchEvent(new CustomEvent("cycle", { detail: 1 })));
   on("data", "click", () => act(() => api.call("open_path", { path: snap.data_dir })));
   wireAio(on);
+  snap.games.filter((x) => x.community_launcher).forEach((x) => wireCommunityLauncher(on, x));
   nav.refocus(keep ? `[data-key="${CSS.escape(keep)}"]` : null);
 }
 
@@ -913,6 +994,8 @@ function tick() {
   api.on("workshop-progress", onWorkshopProgress);
   api.on("aio-launcher-progress", onAioProgress);
   api.on("aio-launcher-closed", () => refreshAfterAio(true).catch(() => {}));
+  api.on("community-launcher-progress", onCommunityLauncherProgress);
+  api.on("community-launcher-closed", (e) => onCommunityLauncherClosed(e).catch(() => {}));
   tick();
   setInterval(tick, 15000);
 })();

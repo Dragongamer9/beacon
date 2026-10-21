@@ -148,6 +148,22 @@ pub fn remove_links(dir: &Path) -> Result<usize> {
 
 /// Extract a disc image into `dest` (which must not exist yet).
 pub fn extract_image(image: &Path, dest: &Path) -> Result<()> {
+    extract_with(
+        image,
+        dest,
+        if cfg!(windows) {
+            "no tool to open the disc image: Windows 10 or later has tar.exe; or install 7-Zip, or mount the image (double-click it) and pick its drive"
+        } else {
+            "no tool to open the disc image: install libarchive (bsdtar) or 7-Zip (7z), or mount the image and pick its folder"
+        },
+    )
+}
+
+/// Extract an archive bsdtar or 7-Zip can read (a disc image, a .zip) into
+/// `dest` (which must not exist yet), the same way as [`extract_image`]:
+/// separate arguments, no shell, links removed afterwards. `no_tool` is the
+/// error when neither tool is there.
+pub fn extract_with(image: &Path, dest: &Path, no_tool: &str) -> Result<()> {
     if dest.exists() {
         bail!("{} already exists", dest.display());
     }
@@ -175,11 +191,7 @@ pub fn extract_image(image: &Path, dest: &Path) -> Result<()> {
         }
     }
     if tried.is_empty() {
-        bail!(if cfg!(windows) {
-            "no tool to open the disc image: Windows 10 or later has tar.exe; or install 7-Zip, or mount the image (double-click it) and pick its drive"
-        } else {
-            "no tool to open the disc image: install libarchive (bsdtar) or 7-Zip (7z), or mount the image and pick its folder"
-        });
+        bail!("{no_tool}");
     }
     Err(anyhow!("couldn't extract {}: {}", image.display(), tried.join("; ")))
 }
