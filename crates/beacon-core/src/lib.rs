@@ -332,6 +332,57 @@ impl Beacon {
         found
     }
 
+    /// Games without a working folder yet.
+    pub fn missing_games(&self) -> Vec<GameId> {
+        GameId::ALL.into_iter().filter(|g| self.game_dir(*g).is_none()).collect()
+    }
+
+    /// A quick, read-only look for games that aren't found yet, for running in
+    /// the background while Beacon is open: Beacon's own prefixes, the usual
+    /// game folders and the folders the registry names, less deep than `scan`.
+    /// Only games still missing are returned.
+    pub fn quick_find(&self) -> Vec<FoundGame> {
+        let missing = self.missing_games();
+        if missing.is_empty() {
+            return vec![];
+        }
+        let mut roots: Vec<(PathBuf, usize)> = vec![(self.paths.data_dir.join("prefixes"), 8)];
+        roots.extend(self.scan_roots().into_iter().map(|r| (r, 5)));
+        for d in self.install_hints(&[]) {
+            roots.push((d, 3));
+        }
+        let mut found: Vec<FoundGame> = Vec::new();
+        let mut seen_roots: Vec<PathBuf> = Vec::new();
+        for (root, depth) in roots {
+            if seen_roots.contains(&root) {
+                continue;
+            }
+            seen_roots.push(root.clone());
+            for f in games::scan(std::slice::from_ref(&root), depth) {
+                if missing.contains(&f.game) && !found.iter().any(|x| x.game == f.game) {
+                    found.push(f);
+                }
+            }
+            if missing.iter().all(|g| found.iter().any(|f| f.game == *g)) {
+                break;
+            }
+        }
+        found
+    }
+
+    /// Point games that have no working folder at ones found by `scan`/`quick_find`
+    /// (games already set up are left alone). Returns the games it set; save afterwards.
+    pub fn adopt_found(&mut self, found: &[FoundGame]) -> Vec<FoundGame> {
+        let mut out = Vec::new();
+        for f in found {
+            if self.game_dir(f.game).is_none() && games::find_exe_in(&f.dir, f.game).is_some() && !out.iter().any(|x: &FoundGame| x.game == f.game) {
+                self.game_mut(f.game).path = Some(f.dir.clone());
+                out.push(f.clone());
+            }
+        }
+        out
+    }
+
     pub fn runner_for(&self, g: GameId) -> Option<&Runner> {
         let cfg = self.game(g);
         cfg.runner
@@ -1143,6 +1194,37 @@ mod tests {
         assert!(st.ready, "{:?}", st.issues);
         assert_eq!(st.runner.unwrap().id, "wine:system");
         assert!(st.issues.iter().any(|i| i.level == Level::Warn));
+    }
+
+    #[test]
+    fn quick_find_picks_up_new_installs_only() {
+        let mut e = e_with_bfme1();
+        // BFME is set up; BFME II and RotWK are on disk but not found yet.
+        let found = e.beacon.quick_find();
+        let games: Vec<GameId> = found.iter().map(|f| f.game).collect();
+        assert!(games.contains(&GameId::Bfme2) && games.contains(&GameId::Rotwk) && !games.contains(&GameId::Bfme1));
+        let set = e.beacon.adopt_found(&found);
+        assert_eq!(set.len(), 2);
+        assert_eq!(e.beacon.game(GameId::Bfme2).path.as_deref(), Some(e.games.join("BFME2").as_path()));
+        // Installed later, inside one of Beacon's own prefixes (an installer run there).
+        let pfx = e.beacon.paths.data_dir.join("prefixes/conquest/pfx/drive_c/Program Files/LOTR Conquest");
+        fs::create_dir_all(&pfx).unwrap();
+        fs::write(pfx.join("Conquest.exe"), b"").unwrap();
+        let found = e.beacon.quick_find();
+        assert_eq!(found.iter().map(|f| f.game).collect::<Vec<_>>(), vec![GameId::Conquest]);
+        // A game that's already set up is never moved.
+        let other = e.games.join("Other BFME");
+        fs::create_dir_all(&other).unwrap();
+        fs::write(other.join("lotrbfme.exe"), b"").unwrap();
+        assert!(e.beacon.adopt_found(&[FoundGame { game: GameId::Bfme1, dir: other }]).is_empty());
+        assert_eq!(e.beacon.game(GameId::Bfme1).path.as_deref(), Some(e.games.join("BFME1").as_path()));
+    }
+
+    fn e_with_bfme1() -> Env {
+        let mut e = env();
+        let d = e.games.join("BFME1");
+        e.beacon.set_path(GameId::Bfme1, &d).unwrap();
+        e
     }
 
     #[test]

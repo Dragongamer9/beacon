@@ -204,6 +204,7 @@ function mockApi() {
       setTimeout(() => emit("community-launcher-closed", { game: g, found: false }), 5000);
       return snap();
     },
+    look_for_games: async () => { await delay(300); return []; },
     open_url: () => null,
     pick_folder: async () => { await delay(200); return "/home/you/Games/Picked"; },
     pick_file: async ({ kind }) => { await delay(200); return kind === "mod" ? "/home/you/Downloads/Some Mod.big" : kind === "launcher" ? "/home/you/Downloads/UaW Launcher 1.3.zip" : "/home/you/Downloads/patch.exe"; },

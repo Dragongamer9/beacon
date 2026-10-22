@@ -1004,6 +1004,18 @@ window.addEventListener("focus", () => {
   refreshAfterAio.last = Date.now();
   refreshAfterAio(false).catch(() => {});
 });
+// Games found without pressing "Find games" (start-up scan, new installs).
+async function onGamesFound(ids) {
+  snap = await api.call("get_state");
+  render();
+  const names = ids.map((id) => snap.games.find((g) => g.id === id)?.short ?? id);
+  if (names.length) toast(`Found ${names.join(", ")}`);
+}
+window.addEventListener("focus", () => {
+  if (!snap || Date.now() - (onGamesFound.lastLook || 0) < 20000 || snap.games.every((g) => g.installed)) return;
+  onGamesFound.lastLook = Date.now();
+  api.call("look_for_games").then((ids) => ids?.length && onGamesFound(ids)).catch(() => {});
+});
 // Clicking the dimmed area left of a sheet closes it.
 document.addEventListener("pointerdown", (e) => {
   if (openSheet && !e.target.closest(".sheet") && !e.target.closest("#overlay")) closeSheet();
@@ -1024,6 +1036,7 @@ function tick() {
   render();
   nav.focus($("#btn-play"));
   api.on("game-event", onGameEvent);
+  api.on("games-found", ({ games }) => onGamesFound(games).catch(() => {}));
   api.on("workshop-progress", onWorkshopProgress);
   api.on("aio-launcher-progress", onAioProgress);
   api.on("aio-launcher-closed", () => refreshAfterAio(true).catch(() => {}));
