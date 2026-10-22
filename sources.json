@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "version": 1,
+  "version": 2,
   "workshop": {
     "api": "https://bfmeladder.com/api",
     "discover": [
@@ -34,6 +34,19 @@
       "kind": "workshop",
       "guid": "original-RotWK",
       "guid_prefix": "original-"
+    },
+    {
+      "id": "uaw-launcher",
+      "title": "Universe at War community launcher",
+      "launcher_for": "uaw",
+      "kind": "drive-folder",
+      "folder": "167UET84ZWXrMd9zpxEYiQWTQZexCGZfT",
+      "patterns": [
+        "*.zip",
+        "*.exe"
+      ],
+      "prefer": "launcher",
+      "depth": 1
     }
   ]
 }

@@ -157,7 +157,8 @@ enum Cmd {
         action: CommunityAction,
     },
     /// Private build: download BFME, BFME II or RotWK from the BFME Foundation's CDN and set it up
-    /// (RotWK brings BFME II along when it's missing). Resumes where it stopped.
+    /// (RotWK brings BFME II along when it's missing), or UaW's newest community launcher from its
+    /// Google Drive folder. Resumes where it stopped.
     Get {
         game: String,
         /// Download it again over an existing copy, keeping files that are already fine.
