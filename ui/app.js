@@ -484,7 +484,9 @@ function renderGameSheet() {
       : []),
     ...(!aotr && !g.installed
       ? [
-          // Easiest for the BFME games: the BFME Foundation's launcher downloads them, Beacon finds them.
+          // Private build: Beacon downloads the BFME games itself, from the BFME Foundation's CDN.
+          ...(WORKSHOP_GAMES.includes(g.id) ? cdnRows(g) : []),
+          // Or the BFME Foundation's launcher downloads them, Beacon finds them.
           ...(WORKSHOP_GAMES.includes(g.id) ? aioRows() : []),
           ...(g.store_url ? [rowHTML({ key: "store", label: "Get it on Steam", sub: "Still sold — opens the store page", value: "Open" })] : []),
           `<div class="mod-line">${rowHTML({
@@ -527,6 +529,12 @@ function renderGameSheet() {
     sage && rowHTML({ key: "windowed", label: "Windowed", sub: "Adds -win", extra: `<span class="toggle${g.windowed ? " on" : ""}"></span>` }),
     fieldHTML({ key: "args", label: "Extra arguments", placeholder: sage ? "-noshellmap" : "Optional", value: g.extra_args }),
     `<p class="section-label">Tools</p>`,
+    ...(g.installed && WORKSHOP_GAMES.includes(g.id) && ownDownload(g)
+      ? [
+          `<button class="nav row-btn" data-key="cdn-repair"><svg viewBox="0 0 24 24"><use href="#i-scan"/></svg>Repair game files (downloads anything missing)</button>`,
+          `<button class="nav row-btn" data-key="cdn-verify"><svg viewBox="0 0 24 24"><use href="#i-scan"/></svg>Verify every file (slow: checks each checksum)</button>`,
+        ]
+      : []),
     ...(g.installed && WORKSHOP_GAMES.includes(g.id) && snap.aio_launcher?.installed
       ? [`<button class="nav row-btn" data-key="aio-open"><svg viewBox="0 0 24 24"><use href="#i-open"/></svg>Open the All-in-One launcher (patches, workshop, online)</button>`]
       : []),
@@ -560,6 +568,7 @@ function renderGameSheet() {
   on("own-copy", "click", () => installFromCopy(g, false));
   on("own-copy-folder", "click", () => installFromCopy(g, true));
   wireAio(on);
+  wireCdn(on, g);
   wireCommunityLauncher(on, g);
   on("edition", "cycle", (e) => {
     if (installedEds.length < 2) return;
@@ -821,6 +830,7 @@ function renderLauncherSheet() {
       return `<div class="row" style="cursor:default"><span style="min-width:0"><span class="label">${esc(gg?.short ?? a.game)}${a.active_patch ? ` · ${esc(a.active_patch)}` : ""}</span><span class="sub">${esc(a.dir)}</span></span><span class="badge">Found</span></div>`;
     }),
     ...aioRows(),
+    ...downloadsRows(),
     ...snap.games.filter((x) => x.community_launcher).flatMap((x) => [`<p class="section-label">${esc(x.title)} launcher</p>`, ...communityLauncherRows(x)]),
     `<p class="section-label">Storage</p>`,
     `<button class="nav row-btn" data-key="data"><svg viewBox="0 0 24 24"><use href="#i-folder"/></svg>Open Beacon's data folder (prefixes, mods, logs)</button>`,
@@ -837,6 +847,7 @@ function renderLauncherSheet() {
   on("defrunner", "click", (e) => e.currentTarget.dispatchEvent(new CustomEvent("cycle", { detail: 1 })));
   on("data", "click", () => act(() => api.call("open_path", { path: snap.data_dir })));
   wireAio(on);
+  wireDownloads(on, rows);
   snap.games.filter((x) => x.community_launcher).forEach((x) => wireCommunityLauncher(on, x));
   nav.refocus(keep ? `[data-key="${CSS.escape(keep)}"]` : null);
 }
@@ -913,6 +924,153 @@ async function onGameEvent({ game: id, phase, message }) {
     else hideOverlay();
   }
   render();
+}
+
+// ---------------------------------------------------------------- private build: downloads
+// BFME, BFME II and RotWK straight from the BFME Foundation's CDN (the packages the All-in-One launcher installs),
+// resolved through sources.json so a moved link is found again. RotWK brings BFME II along when it's missing.
+
+let dlInfo = null; // downloads_info: sources version, token, games folder, last check
+let cdnBusy = null; // game id while downloading
+const cdnGuess = {}; // game id → note, when the source only turned up a guess
+
+const ownDownload = (g) => !!(dlInfo && g.path && g.path.startsWith(dlInfo.games_dir));
+
+function cdnRows(g) {
+  if (cdnGuess[g.id]) {
+    return [
+      rowHTML({ key: "cdn-guess", label: `Download ${g.short} from the package Beacon found`, sub: `Its usual link changed: ${cdnGuess[g.id]}`, value: "Use it" }),
+    ];
+  }
+  const withB2 = g.id === "rotwk" && !snap.games.find((x) => x.id === "bfme2")?.installed;
+  const check = dlInfo?.checks?.find((c) => c.id === g.id);
+  const broken = check?.state === "broken";
+  return [
+    rowHTML({
+      key: "cdn-get",
+      label: `Download ${g.short}`,
+      sub: broken
+        ? `The source didn't answer at the last check: ${check.detail}`
+        : `Straight from the BFME Foundation's servers${withB2 ? " · BFME II comes along" : ""} · resumes if it stops${check?.state === "ok" || check?.state === "moved" ? ` · ${check.detail.split(" (")[0]}` : ""}`,
+      value: "Download",
+    }),
+  ];
+}
+
+function wireCdn(on, g) {
+  on("cdn-get", "click", () => cdnGet(g, {}));
+  on("cdn-guess", "click", () => cdnGet(g, { acceptGuess: true }));
+  on("cdn-repair", "click", () => cdnGet(g, { repair: true }));
+  on("cdn-verify", "click", () => cdnGet(g, { verify: true }));
+}
+
+async function cdnGet(g, { repair = false, verify = false, acceptGuess = false }) {
+  if (cdnBusy) return toast(`Already downloading ${snap.games.find((x) => x.id === cdnBusy)?.short ?? cdnBusy}`, true);
+  cdnBusy = g.id;
+  showOverlay({ title: repair || verify ? `Checking ${g.short}'s files…` : `Downloading ${g.short}…`, text: "Looking up the download" });
+  try {
+    const r = await api.call("cdn_get", { game: g.id, repair, verify, acceptGuess });
+    if (r.result === "needs-confirm") {
+      cdnGuess[g.id] = r.note;
+      hideOverlay();
+      render();
+      toast(`${g.short}'s usual download changed — check what Beacon found in Game settings`, true);
+    } else {
+      delete cdnGuess[g.id];
+      snap = r.snapshot;
+      dlInfo = await api.call("downloads_info").catch(() => dlInfo);
+      hideOverlay();
+      render();
+      toast(r.notes?.length ? `${r.message} (${r.notes.join("; ")})` : r.message);
+    }
+  } catch (e) {
+    showOverlay({ title: `Couldn't download ${g.short}`, text: `${String(e?.message ?? e)} — run it again to pick up where it stopped.`, error: true, ok: true });
+  }
+  cdnBusy = null;
+}
+
+function onCdnProgress({ pct, text }) {
+  if (!cdnBusy || $("#overlay").hidden) return;
+  $("#overlay-text").textContent = pct == null ? text : `${pct}% · ${text}`;
+}
+
+const STATE_BADGE = { ok: "Working", moved: "Moved · found", "needs-confirm": "Changed · guess", broken: "Broken" };
+
+function downloadsRows() {
+  const d = dlInfo;
+  if (!d) return [];
+  const checks = d.checks || [];
+  const bad = checks.filter((c) => c.state === "broken" || c.state === "needs-confirm");
+  const summary = !checks.length ? "Not checked yet" : bad.length ? `${bad.length} of ${checks.length} need a look` : `All ${checks.length} working`;
+  return [
+    `<p class="section-label">Downloads (private build)</p>`,
+    rowHTML({ key: "src-check", label: "Check download sources", sub: `${summary} · also runs when Beacon starts`, value: "Check" }),
+    ...checks.map(
+      (c) =>
+        `<div class="row" style="cursor:default"><span style="min-width:0"><span class="label">${esc(c.title)}</span><span class="sub">${esc(c.detail)}</span></span><span class="badge${c.state === "broken" ? " bad" : ""}">${esc(STATE_BADGE[c.state] ?? c.state)}</span></div>`
+    ),
+    rowHTML({ key: "src-update", label: "Update the sources list", sub: `Version ${d.version} (${d.built_in ? "built in" : "downloaded"}) · from ${d.sources_repo}${d.token_set ? "" : " · needs a token"}`, value: "Update" }),
+    fieldHTML({
+      key: "gh-token",
+      label: "GitHub token",
+      placeholder: d.token_set ? "Saved — paste a new one to replace it" : `Read-only token for ${d.sources_repo}`,
+      help: "Fine-grained, Contents: read on the private repo only. Lets Beacon fetch a fixed sources.json without a rebuild.",
+    }),
+    `<div class="mod-line">${rowHTML({ key: "games-dir", label: "Downloaded games go to", sub: d.games_dir, value: "Change" })}${d.custom_games_dir ? `<button class="nav side" data-key="games-dir-default">Default</button>` : ""}</div>`,
+  ];
+}
+
+function wireDownloads(on, rows) {
+  on("src-check", "click", async () => {
+    toast("Checking the download sources…");
+    try {
+      const checks = await api.call("sources_check");
+      dlInfo = { ...dlInfo, checks };
+      render();
+      const bad = checks.filter((c) => c.state === "broken");
+      toast(bad.length ? `Broken: ${bad.map((c) => c.title).join(", ")}` : "All download sources work", !!bad.length);
+    } catch (e) {
+      toast(String(e?.message ?? e), true);
+    }
+  });
+  on("src-update", "click", async () => {
+    try {
+      const u = await api.call("sources_update");
+      dlInfo = await api.call("downloads_info").catch(() => dlInfo);
+      render();
+      toast(u.skipped ? `Not updated: ${u.skipped}` : u.to > u.from ? `Sources list updated to version ${u.to}` : `Sources list is up to date (version ${u.from})`, !!u.skipped);
+    } catch (e) {
+      toast(String(e?.message ?? e), true);
+    }
+  });
+  const tok = rows.querySelector("#f-gh-token");
+  tok?.addEventListener("change", async () => {
+    const value = tok.value;
+    tok.value = "";
+    if (await act(() => api.call("set_github_token", { token: value }), value.trim() ? "Token saved (only readable by you)" : "Token removed")) {
+      dlInfo = await api.call("downloads_info").catch(() => dlInfo);
+      render();
+    }
+  });
+  const setDir = async (path) => {
+    if (await act(() => api.call("set_games_dir", { path }), path ? `Downloaded games go to ${path}` : "Downloaded games go to Beacon's data folder")) {
+      dlInfo = await api.call("downloads_info").catch(() => dlInfo);
+      render();
+    }
+  };
+  on("games-dir", "click", async () => {
+    const path = await api.call("pick_folder");
+    if (path) setDir(path);
+  });
+  on("games-dir-default", "click", () => setDir(null));
+}
+
+function onSourcesChecked({ checks, updated }) {
+  if (dlInfo) dlInfo = { ...dlInfo, checks, ...(updated ? { version: updated.to, built_in: false } : {}) };
+  if (updated) toast(`Download sources list updated to version ${updated.to}`);
+  const bad = (checks || []).filter((c) => c.state === "broken");
+  if (bad.length) toast(`A download source isn't answering: ${bad.map((c) => c.title).join(", ")}`, true);
+  if (openSheet === "launcher" || openSheet === "game") render();
 }
 
 // ---------------------------------------------------------------- wiring
@@ -995,6 +1153,9 @@ function tick() {
   api.on("aio-launcher-progress", onAioProgress);
   api.on("aio-launcher-closed", () => refreshAfterAio(true).catch(() => {}));
   api.on("community-launcher-progress", onCommunityLauncherProgress);
+  api.on("cdn-progress", onCdnProgress);
+  api.on("sources-checked", onSourcesChecked);
+  dlInfo = await api.call("downloads_info").catch(() => null);
   api.on("community-launcher-closed", (e) => onCommunityLauncherClosed(e).catch(() => {}));
   tick();
   setInterval(tick, 15000);

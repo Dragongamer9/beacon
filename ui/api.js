@@ -81,6 +81,7 @@ function mockApi() {
     rol: { editions: [], steps: [step("patch", "Latest official patch", "From Rise of Legends Heaven.", "installer"), step("crash-fix", "Long-game crash fix", "Community fix for long sessions.", "merge"), step("user-patch", "User Patch Project", "Community patch in progress.", "link")] },
   };
   const snap = () => structuredClone(state);
+  const dl = { version: 1, built_in: true, sources_repo: "Dragongamer9/beacon-private", token_set: false, games_dir: "/home/you/.local/share/beacon/games", custom_games_dir: false, learned_api: null, checks: null, games: ["bfme1", "bfme2", "rotwk"] };
   const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
   const handlers = {
@@ -204,6 +205,35 @@ function mockApi() {
       setTimeout(() => emit("community-launcher-closed", { game: g, found: false }), 5000);
       return snap();
     },
+    // Private build: downloads.
+    downloads_info: () => structuredClone(dl),
+    cdn_get: async ({ game: g, repair, acceptGuess }) => {
+      if (g === "bfme1" && !acceptGuess && !dl.guessed) {
+        dl.guessed = true;
+        return { result: "needs-confirm", game: g, note: "original-BFME1 is gone; the closest package is original-BFME1-v2 (Vanilla (1.03))" };
+      }
+      const order = g === "rotwk" && !game("bfme2").installed ? ["bfme2", "rotwk"] : [g];
+      for (const id of order) {
+        for (const pct of [0, 12, 37, 64, 88, 99]) {
+          emit("cdn-progress", { game: g, pct, text: `${game(id).short} (${Math.round(pct * 2.4)}/240): ${pct < 50 ? "data\\movies\\intro.vp6" : "Textures.big"}` });
+          await delay(300);
+        }
+        Object.assign(game(id), { path: `${dl.games_dir}/${{ bfme1: "BFME1", bfme2: "BFME2", rotwk: "RotWK" }[id]}`, installed: true, ready: true, has_cd_key: true, issues: [] });
+      }
+      return { result: "done", snapshot: snap(), message: `${order.map((id) => game(id).short).join(" and ")} ${repair ? "repaired" : "downloaded and ready"}`, notes: [] };
+    },
+    sources_check: async () => {
+      await delay(900);
+      dl.checks = [
+        { id: "bfme1", title: "The Battle for Middle-earth", state: "ok", detail: "Vanilla (1.03): 183 files, 3.9 GB" },
+        { id: "bfme2", title: "The Battle for Middle-earth II", state: "ok", detail: "Vanilla (1.06): 240 files, 5.6 GB" },
+        { id: "rotwk", title: "The Rise of the Witch-king", state: "moved", detail: "Vanilla (2.01): 151 files, 3.1 GB (the workshop moved to api.example.org; Beacon found it in the All-in-One launcher's source)" },
+      ];
+      return structuredClone(dl.checks);
+    },
+    sources_update: async () => { await delay(600); return dl.token_set ? { from: dl.version, to: ++dl.version, skipped: null } : { from: dl.version, to: dl.version, skipped: "no GitHub token set" }; },
+    set_github_token: ({ token }) => { dl.token_set = !!token.trim(); },
+    set_games_dir: ({ path }) => { dl.games_dir = path || "/home/you/.local/share/beacon/games"; dl.custom_games_dir = !!path; },
     open_url: () => null,
     pick_folder: async () => { await delay(200); return "/home/you/Games/Picked"; },
     pick_file: async ({ kind }) => { await delay(200); return kind === "mod" ? "/home/you/Downloads/Some Mod.big" : kind === "launcher" ? "/home/you/Downloads/UaW Launcher 1.3.zip" : "/home/you/Downloads/patch.exe"; },

@@ -209,6 +209,7 @@ button.nav svg { width: 1.2em; height: 1.2em; }
 .row.selected { border-color: var(--line-strong) !important; }
 .row .tick { width: 22px; height: 22px; color: var(--ok); }
 .row .badge { font-size: .74em; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); border: 1px solid var(--line-strong); border-radius: 6px; padding: 1px 6px; }
+.row .badge.bad { color: var(--bad, #e06c5a); border-color: currentColor; }
 .row-btn { padding: 12px 16px; border-radius: 12px; color: var(--muted) !important; width: 100%; }
 .row-btn.focused { color: var(--text) !important; background: rgba(239, 227, 200, .06); }
 .row-btn.danger.focused { color: var(--danger) !important; }
