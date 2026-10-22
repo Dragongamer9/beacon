@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "version": 2,
+  "version": 3,
   "workshop": {
     "api": "https://bfmeladder.com/api",
     "discover": [
@@ -47,6 +47,15 @@
       ],
       "prefer": "launcher",
       "depth": 1
+    },
+    {
+      "id": "rol",
+      "title": "Rise of Nations: Rise of Legends",
+      "archive_for": "rol",
+      "install_folder": "Rise of Legends",
+      "kind": "drive-file",
+      "file": "1P7a2FcJaQnyNMtI9Tfa9OTXvVkfB9nrx",
+      "name": "Rise Of Legends Game Files.zip"
     }
   ]
 }

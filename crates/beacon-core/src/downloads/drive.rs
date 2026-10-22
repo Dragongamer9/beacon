@@ -28,6 +28,19 @@ pub fn folder_id(s: &str) -> Option<String> {
     is_id(id).then(|| id.to_string())
 }
 
+/// A file id from an id or a `…/file/d/<id>/…` (or `…?id=<id>`) link.
+pub fn file_id(s: &str) -> Option<String> {
+    let s = s.trim();
+    let id = if let Some(r) = s.split("/file/d/").nth(1) {
+        r.split(['?', '/', '#']).next().unwrap_or("")
+    } else if let Some(r) = s.split("id=").nth(1).filter(|_| s.contains("drive.google.com") || s.contains("googleusercontent.com")) {
+        r.split(['&', '#']).next().unwrap_or("")
+    } else {
+        s
+    };
+    is_id(id).then(|| id.to_string())
+}
+
 /// List a public folder: the embedded view first, the folder page's data second.
 pub fn list(t: &dyn Transfer, folder: &str) -> Result<Vec<Entry>> {
     if !is_id(folder) {
@@ -387,5 +400,8 @@ mod tests {
         assert_eq!(folder_id("https://drive.google.com/drive/folders/167UET84ZWXrMd9zpxEYiQWTQZexCGZfT?usp=sharing").as_deref(), Some(FOLDER));
         assert_eq!(folder_id(FOLDER).as_deref(), Some(FOLDER));
         assert_eq!(folder_id("../etc"), None);
+        assert_eq!(file_id("https://drive.google.com/file/d/1P7a2FcJaQnyNMtI9Tfa9OTXvVkfB9nrx/edit").as_deref(), Some("1P7a2FcJaQnyNMtI9Tfa9OTXvVkfB9nrx"));
+        assert_eq!(file_id("https://drive.google.com/open?id=1P7a2FcJaQnyNMtI9Tfa9OTXvVkfB9nrx").as_deref(), Some("1P7a2FcJaQnyNMtI9Tfa9OTXvVkfB9nrx"));
+        assert_eq!(file_id("not an id"), None);
     }
 }

@@ -17,6 +17,11 @@ Beacon's own downloads. Don't publish its builds.
   - Beacon lists the folder each time, so new versions get picked up on their own. If the launchers move into
     subfolders, Beacon searches the newest one.
   - "Update the UaW launcher" downloads only when a newer file is in the folder.
+- **Rise of Legends from its Google Drive zip.** Beacon downloads it, extracts it and checks what's inside:
+  - The game itself (`RiseOfLegends.exe`): it goes to `<games>/Rise of Legends` and is ready to play. The zip is
+    deleted afterwards to save space.
+  - A launcher or installer: it's kept in Beacon's tools folder and run in RoL's prefix, and Beacon finds the game
+    when it closes. "Run the RoL launcher again" stays on the game's page until the game is installed.
 - **Links that fix themselves.** Nothing is a hard-coded download link. `sources.json` says how to *find* each file,
   and Beacon looks it up at download time:
   - `workshop`: the Foundation's API. If its server moves, Beacon reads the All-in-One launcher's source on GitHub for
@@ -27,6 +32,7 @@ Beacon's own downloads. Don't publish its builds.
   - `github`: the latest release asset matching a pattern.
   - `drive-folder`: the newest file matching a pattern in a public Google Drive folder. Beacon gets past Drive's
     virus-scan warning page that large files get.
+  - `drive-file`: one public Google Drive file (its link or id).
   - `direct`: a plain https URL.
 - **Fixes without rebuilding.** Beacon fetches `sources.json` from this repo, at most every 6 hours and on demand. The
   higher `version` wins over the copy built in. So when a site changes in a way the scanner can't follow, edit
@@ -53,6 +59,7 @@ beacon get bfme1 --verify        # check every file's MD5 and replace damaged on
 beacon get bfme1 --yes           # accept a source Beacon only guessed after its link changed
 beacon get uaw                   # newest UaW community launcher from its Drive folder, set up
 beacon get uaw --repair          # download it again even if it's the one in use
+beacon get rol                   # Rise of Legends from its Drive zip: the game, or its launcher to run
 beacon sources                   # list version, sources, token, games folder
 beacon sources check             # look every source up now
 beacon sources update            # fetch sources.json from this repo now

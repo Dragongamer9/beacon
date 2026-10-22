@@ -3,7 +3,7 @@
 
 use super::{game, usage, Ctx};
 use anyhow::Result;
-use beacon_core::downloads::{basegame, launcher, sources, Client};
+use beacon_core::downloads::{archive, basegame, launcher, sources, Client};
 use beacon_core::{report, Beacon};
 use clap::Subcommand;
 use serde_json::{json, Value};
@@ -53,10 +53,13 @@ fn human_progress(ctx: &Ctx) -> impl FnMut(Option<u8>, &str) + '_ {
 pub fn get(ctx: &Ctx, b: &mut Beacon, g: &str, repair: bool, verify: bool, yes: bool) -> Result<Value> {
     let g = game(g)?;
     if !basegame::supported(g) {
+        if b.has_archive_source(g) {
+            return get_archive(ctx, b, g, yes);
+        }
         if b.has_launcher_source(g) {
             return get_launcher(ctx, b, g, repair || verify, yes);
         }
-        return Err(usage(format!("Beacon can't download {} (bfme1, bfme2 and rotwk come from the BFME Foundation's CDN; uaw's community launcher from its Drive folder)", g.short())));
+        return Err(usage(format!("Beacon can't download {} (bfme1, bfme2 and rotwk come from the BFME Foundation's CDN; uaw's launcher and rol from Google Drive)", g.short())));
     }
     let opts = basegame::Options { thorough: verify, accept_guess: yes, reinstall: repair || verify };
     let net = Client::new();
@@ -221,4 +224,35 @@ fn get_launcher(ctx: &Ctx, b: &mut Beacon, g: beacon_core::games::GameId, force:
             Ok(report::ok(Some(g), format!("{} launcher ready", g.short()), json!({"launcher": report::value(&f), "exe": report::path(&exe)})))
         }
     }
+}
+
+/// `beacon get rol`: the game's archive, extracted; the game itself, or a launcher to run.
+fn get_archive(ctx: &Ctx, b: &mut Beacon, g: beacon_core::games::GameId, yes: bool) -> Result<Value> {
+    let mut progress = human_progress(ctx);
+    let out = b.archive_download(&Client::new(), g, yes, &mut progress)?;
+    let f = match out {
+        archive::Outcome::NeedsConfirm { note, .. } => {
+            ctx.say(format!("Not downloaded: {note}.\nIf that looks right, run `beacon get {} --yes`.", g.slug()));
+            return Ok(json!({"ok": false, "kind": "needs-confirm", "game": g.slug(), "error": note}));
+        }
+        archive::Outcome::Ready(f) => f,
+    };
+    let u = b.archive_unpack(g, &f.file, &mut progress)?;
+    if !ctx.json && std::io::stderr().is_terminal() {
+        eprintln!();
+    }
+    b.archive_adopt(&u)?;
+    b.save()?;
+    match &u {
+        archive::Unpacked::Game { dir, .. } => ctx.say(format!("{} is ready in {}: `beacon launch {}`", g.short(), dir.display(), g.slug())),
+        archive::Unpacked::Launcher { exe, .. } => ctx.say(format!(
+            "{} held a launcher/installer, not the game itself: {}\nRun it in {}'s prefix with `beacon run {} \"{}\"`; Beacon finds the game when it closes.",
+            f.name,
+            exe.display(),
+            g.short(),
+            g.slug(),
+            exe.display()
+        )),
+    }
+    Ok(report::ok(Some(g), format!("{} downloaded", g.short()), json!({"download": report::value(&f), "unpacked": report::value(&u)})))
 }
