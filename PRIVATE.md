@@ -12,8 +12,8 @@ Beacon's own downloads. Don't publish its builds.
     game's prefix; on Windows through `reg import`, with a UAC prompt).
   - Downloads resume where they stopped. Every file is checked against the package's size and MD5.
 - **Universe at War's community launcher, downloaded for you.** Beacon fetches the newest launcher from the
-  community's Google Drive folder, sets it up the same way as one you picked by hand, and opens it so you can
-  download the game there.
+  community's Google Drive folder and sets it up the same way as one you picked by hand; open it from there to
+  download the game.
   - Beacon lists the folder each time, so new versions get picked up on their own. If the launchers move into
     subfolders, Beacon searches the newest one.
   - "Update the UaW launcher" downloads only when a newer file is in the folder.
