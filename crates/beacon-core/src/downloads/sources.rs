@@ -77,6 +77,9 @@ pub struct Source {
     pub title: String,
     #[serde(default)]
     pub game: Option<GameId>,
+    /// The game whose community launcher this is (UaW).
+    #[serde(default)]
+    pub launcher_for: Option<GameId>,
     #[serde(flatten)]
     pub kind: Kind,
 }
@@ -104,6 +107,18 @@ pub enum Kind {
         /// Wildcard pattern for the asset's name.
         asset: String,
     },
+    /// A public Google Drive folder: the newest file matching `patterns`.
+    DriveFolder {
+        /// The folder's id (or its link).
+        folder: String,
+        patterns: Vec<String>,
+        /// Names with this word win (e.g. "launcher").
+        #[serde(default)]
+        prefer: Option<String>,
+        /// How many levels of subfolders to look through when the folder has no match itself.
+        #[serde(default = "one")]
+        depth: u8,
+    },
     Direct {
         url: String,
         #[serde(default)]
@@ -111,6 +126,10 @@ pub enum Kind {
         #[serde(default)]
         size: Option<u64>,
     },
+}
+
+fn one() -> u8 {
+    1
 }
 
 impl SourceList {
@@ -130,6 +149,11 @@ impl SourceList {
                 Kind::Direct { url, .. } => vec![url.as_str()],
                 _ => vec![],
             };
+            if let Kind::DriveFolder { folder, patterns, .. } = &s.kind {
+                if super::drive::folder_id(folder).is_none() || patterns.is_empty() {
+                    bail!("sources.json: {} needs a Drive folder id and at least one pattern", s.id);
+                }
+            }
             if let Some(bad) = urls.into_iter().find(|u| !is_https(u)) {
                 bail!("sources.json: {} isn't an https link ({bad})", s.id);
             }
@@ -148,6 +172,11 @@ impl SourceList {
     /// The source that installs a game's base files.
     pub fn for_game(&self, g: GameId) -> Option<&Source> {
         self.sources.iter().find(|s| s.game == Some(g))
+    }
+
+    /// The source of a game's community launcher.
+    pub fn launcher_for(&self, g: GameId) -> Option<&Source> {
+        self.sources.iter().find(|s| s.launcher_for == Some(g))
     }
 }
 
@@ -432,6 +461,25 @@ pub fn resolve(t: &dyn Transfer, list: &SourceList, learned: &mut Learned, src: 
         Kind::Github { repo, asset } => {
             let (url, name, size, how) = resolve_github(t, repo, asset)?;
             r(how, Target::File { url, name, size, md5: None })
+        }
+        Kind::DriveFolder { folder, patterns, prefer, depth } => {
+            let folder = super::drive::folder_id(folder).ok_or_else(|| anyhow!("{} isn't a Drive folder", src.id))?;
+            let (entry, how) = match super::drive::pick(t, &folder, patterns, prefer.as_deref(), *depth)? {
+                Some((e, path)) if path.is_empty() => (e, How::Listed),
+                Some((e, path)) => {
+                    let note = format!("found in the subfolder {}", path.join(" / "));
+                    (e, How::Rediscovered { note, confirm: false })
+                }
+                None => match super::drive::near_miss(t, &folder, patterns)? {
+                    Some(e) => {
+                        let note = format!("no file matches {} any more; the closest is {}", patterns.join(" or "), e.name);
+                        (e, How::Rediscovered { note, confirm: true })
+                    }
+                    None => bail!("no file matching {} in the Google Drive folder", patterns.join(" or ")),
+                },
+            };
+            let (url, size) = super::drive::download_url(t, &entry.id)?;
+            r(how, Target::File { url, name: entry.name, size, md5: None })
         }
     }
 }

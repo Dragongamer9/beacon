@@ -4,7 +4,7 @@
 //! start-up check of the sources as `sources-checked`.
 
 use crate::{err, snapshot, AppState, CmdResult};
-use beacon_core::downloads::{basegame, sources, Client};
+use beacon_core::downloads::{basegame, launcher, sources, Client};
 use beacon_core::games::GameId;
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -37,6 +37,7 @@ pub fn downloads_info(state: State<AppState>) -> Value {
         "learned_api": store.learned().workshop_api,
         "checks": checks,
         "games": ["bfme1", "bfme2", "rotwk"],
+        "launchers": list.sources.iter().filter_map(|s| s.launcher_for).collect::<Vec<GameId>>(),
     })
 }
 
@@ -156,4 +157,60 @@ pub fn start_background_check(app: &AppHandle) {
         let checks = run_check(&store);
         let _ = app.emit("sources-checked", json!({"checks": checks, "updated": updated}));
     });
+}
+
+#[derive(Clone, Serialize)]
+struct CommunityLauncherProgress {
+    game: GameId,
+    pct: Option<u8>,
+    text: String,
+}
+
+/// Download the newest community launcher (UaW's, from its Google Drive folder) and set it up like
+/// one picked by hand. Progress arrives as `community-launcher-progress`. Answers
+/// `{result: "done" | "up-to-date", snapshot, message}` or `{result: "needs-confirm", note}`.
+#[tauri::command]
+pub async fn launcher_get(app: AppHandle, game: GameId, force: bool, accept_guess: bool) -> CmdResult<Value> {
+    let b = app.state::<AppState>().beacon.lock().unwrap().clone();
+    let app2 = app.clone();
+    let out = tauri::async_runtime::spawn_blocking(move || {
+        let mut last = std::time::Instant::now() - Duration::from_secs(1);
+        let mut last_pct = None;
+        b.launcher_download(&Client::new(), game, accept_guess, force, &mut |pct: Option<u8>, text: &str| {
+            if pct != last_pct || last.elapsed() >= Duration::from_millis(120) {
+                last = std::time::Instant::now();
+                last_pct = pct;
+                let _ = app2.emit("community-launcher-progress", CommunityLauncherProgress { game, pct, text: text.to_string() });
+            }
+        })
+    })
+    .await
+    .map_err(err)?
+    .map_err(|e| format!("{e:#}"))?;
+    let f = match out {
+        launcher::Outcome::NeedsConfirm { note, .. } => return Ok(json!({"result": "needs-confirm", "game": game, "note": note})),
+        launcher::Outcome::Ready(f) => f,
+    };
+    if f.up_to_date {
+        let state = app.state::<AppState>();
+        return Ok(json!({"result": "up-to-date", "snapshot": snapshot(&state), "message": format!("The {} launcher is already the newest ({})", game.short(), f.name)}));
+    }
+    let _ = app.emit("community-launcher-progress", CommunityLauncherProgress { game, pct: Some(100), text: "Setting up the launcher".into() });
+    let mut work = app.state::<AppState>().beacon.lock().unwrap().clone();
+    let file = f.file.clone();
+    let exe = tauri::async_runtime::spawn_blocking(move || work.set_community_launcher(game, &file, &mut |_: &str| {}))
+        .await
+        .map_err(err)?
+        .map_err(|e| format!("{e:#}"))?;
+    let state = app.state::<AppState>();
+    {
+        let mut b = state.beacon.lock().unwrap();
+        b.game_mut(game).community_launcher = Some(exe);
+        b.save().map_err(err)?;
+    }
+    let mut message = format!("{} ready — open it to download the game", f.name);
+    if let Some(n) = &f.note {
+        message.push_str(&format!(" ({n})"));
+    }
+    Ok(json!({"result": "done", "snapshot": snapshot(&state), "message": message}))
 }

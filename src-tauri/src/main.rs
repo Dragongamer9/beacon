@@ -680,6 +680,7 @@ fn main() {
             private::sources_update,
             private::set_github_token,
             private::set_games_dir,
+            private::launcher_get,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Beacon");

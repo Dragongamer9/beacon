@@ -11,6 +11,12 @@ Beacon's own downloads. Don't publish its builds.
   - Each game gets a made-up CD key, the same way the launcher does it, plus its registry keys (on Linux in the
     game's prefix; on Windows through `reg import`, with a UAC prompt).
   - Downloads resume where they stopped. Every file is checked against the package's size and MD5.
+- **Universe at War's community launcher, downloaded for you.** Beacon fetches the newest launcher from the
+  community's Google Drive folder, sets it up the same way as one you picked by hand, and opens it so you can
+  download the game there.
+  - Beacon lists the folder each time, so new versions get picked up on their own. If the launchers move into
+    subfolders, Beacon searches the newest one.
+  - "Update the UaW launcher" downloads only when a newer file is in the folder.
 - **Links that fix themselves.** Nothing is a hard-coded download link. `sources.json` says how to *find* each file,
   and Beacon looks it up at download time:
   - `workshop`: the Foundation's API. If its server moves, Beacon reads the All-in-One launcher's source on GitHub for
@@ -19,6 +25,8 @@ Beacon's own downloads. Don't publish its builds.
   - `page`: a web page scanned for a link whose file name matches a pattern, newest version first, optionally
     through intermediate pages. If nothing matches, the closest link is offered, never downloaded without a yes.
   - `github`: the latest release asset matching a pattern.
+  - `drive-folder`: the newest file matching a pattern in a public Google Drive folder. Beacon gets past Drive's
+    virus-scan warning page that large files get.
   - `direct`: a plain https URL.
 - **Fixes without rebuilding.** Beacon fetches `sources.json` from this repo, at most every 6 hours and on demand. The
   higher `version` wins over the copy built in. So when a site changes in a way the scanner can't follow, edit
@@ -43,6 +51,8 @@ beacon get rotwk                 # download RotWK (+ BFME II if missing), set up
 beacon get bfme1 --repair        # download anything missing (size check)
 beacon get bfme1 --verify        # check every file's MD5 and replace damaged ones
 beacon get bfme1 --yes           # accept a source Beacon only guessed after its link changed
+beacon get uaw                   # newest UaW community launcher from its Drive folder, set up
+beacon get uaw --repair          # download it again even if it's the one in use
 beacon sources                   # list version, sources, token, games folder
 beacon sources check             # look every source up now
 beacon sources update            # fetch sources.json from this repo now

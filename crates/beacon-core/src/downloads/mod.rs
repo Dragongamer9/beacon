@@ -12,6 +12,8 @@
 //!   size and MD5 checks, size limits.
 
 pub mod basegame;
+pub mod drive;
+pub mod launcher;
 pub mod sources;
 pub mod text;
 

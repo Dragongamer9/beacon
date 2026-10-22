@@ -81,7 +81,7 @@ function mockApi() {
     rol: { editions: [], steps: [step("patch", "Latest official patch", "From Rise of Legends Heaven.", "installer"), step("crash-fix", "Long-game crash fix", "Community fix for long sessions.", "merge"), step("user-patch", "User Patch Project", "Community patch in progress.", "link")] },
   };
   const snap = () => structuredClone(state);
-  const dl = { version: 1, built_in: true, sources_repo: "Dragongamer9/beacon-private", token_set: false, games_dir: "/home/you/.local/share/beacon/games", custom_games_dir: false, learned_api: null, checks: null, games: ["bfme1", "bfme2", "rotwk"] };
+  const dl = { version: 1, built_in: true, sources_repo: "Dragongamer9/beacon-private", token_set: false, games_dir: "/home/you/.local/share/beacon/games", custom_games_dir: false, learned_api: null, checks: null, games: ["bfme1", "bfme2", "rotwk"], launchers: ["uaw"] };
   const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
   const handlers = {
@@ -230,6 +230,16 @@ function mockApi() {
         { id: "rotwk", title: "The Rise of the Witch-king", state: "moved", detail: "Vanilla (2.01): 151 files, 3.1 GB (the workshop moved to api.example.org; Beacon found it in the All-in-One launcher's source)" },
       ];
       return structuredClone(dl.checks);
+    },
+    launcher_get: async ({ game: g }) => {
+      const cl = game(g).community_launcher;
+      if (cl.path?.includes("UaW Launcher 1.4")) return { result: "up-to-date", snapshot: snap(), message: "The UaW launcher is already the newest (UaW Launcher 1.4.zip)" };
+      for (const pct of [null, 20, 55, 90]) {
+        emit("community-launcher-progress", { game: g, pct, text: pct == null ? "Looking for the newest UaW launcher" : "Downloading UaW Launcher 1.4.zip" });
+        await delay(350);
+      }
+      cl.path = "/home/you/.local/share/beacon/tools/uaw-launcher/UaW Launcher 1.4/UaW Launcher.exe";
+      return { result: "done", snapshot: snap(), message: "UaW Launcher 1.4.zip ready — open it to download the game" };
     },
     sources_update: async () => { await delay(600); return dl.token_set ? { from: dl.version, to: ++dl.version, skipped: null } : { from: dl.version, to: dl.version, skipped: "no GitHub token set" }; },
     set_github_token: ({ token }) => { dl.token_set = !!token.trim(); },

@@ -3,7 +3,7 @@
 
 use super::{game, usage, Ctx};
 use anyhow::Result;
-use beacon_core::downloads::{basegame, sources, Client};
+use beacon_core::downloads::{basegame, launcher, sources, Client};
 use beacon_core::{report, Beacon};
 use clap::Subcommand;
 use serde_json::{json, Value};
@@ -53,7 +53,10 @@ fn human_progress(ctx: &Ctx) -> impl FnMut(Option<u8>, &str) + '_ {
 pub fn get(ctx: &Ctx, b: &mut Beacon, g: &str, repair: bool, verify: bool, yes: bool) -> Result<Value> {
     let g = game(g)?;
     if !basegame::supported(g) {
-        return Err(usage(format!("{} isn't on the BFME Foundation's CDN (only bfme1, bfme2 and rotwk)", g.short())));
+        if b.has_launcher_source(g) {
+            return get_launcher(ctx, b, g, repair || verify, yes);
+        }
+        return Err(usage(format!("Beacon can't download {} (bfme1, bfme2 and rotwk come from the BFME Foundation's CDN; uaw's community launcher from its Drive folder)", g.short())));
     }
     let opts = basegame::Options { thorough: verify, accept_guess: yes, reinstall: repair || verify };
     let net = Client::new();
@@ -188,6 +191,34 @@ pub fn sources_cmd(ctx: &Ctx, b: &mut Beacon, action: Option<SourcesAction>) -> 
             store.save_settings(&s)?;
             ctx.say(format!("Downloaded games go to {}", b.games_root().display()));
             Ok(json!({"ok": true, "games_dir": report::path(&b.games_root())}))
+        }
+    }
+}
+
+/// `beacon get uaw`: the newest community launcher, set up for the game.
+fn get_launcher(ctx: &Ctx, b: &mut Beacon, g: beacon_core::games::GameId, force: bool, yes: bool) -> Result<Value> {
+    let mut progress = human_progress(ctx);
+    let out = b.launcher_download(&Client::new(), g, yes, force, &mut progress)?;
+    if !ctx.json && std::io::stderr().is_terminal() {
+        eprintln!();
+    }
+    match out {
+        launcher::Outcome::NeedsConfirm { note, .. } => {
+            ctx.say(format!("Not downloaded: {note}.\nIf that looks right, run `beacon get {} --yes`.", g.slug()));
+            Ok(json!({"ok": false, "kind": "needs-confirm", "game": g.slug(), "error": note}))
+        }
+        launcher::Outcome::Ready(f) if f.up_to_date => {
+            ctx.say(format!("The {} launcher in use is already the newest ({}). `--repair` downloads it again.", g.short(), f.name));
+            Ok(report::ok(Some(g), "Up to date", json!({"launcher": report::value(&f)})))
+        }
+        launcher::Outcome::Ready(f) => {
+            if let Some(n) = &f.note {
+                ctx.say(format!("Note: {n}"));
+            }
+            let exe = b.set_community_launcher(g, &f.file, &mut |t: &str| ctx.progress(None, t))?;
+            b.save()?;
+            ctx.say(format!("{} launcher ready: {}\nOpen it with `beacon community-launcher {} open` and download the game there.", g.short(), exe.display(), g.slug()));
+            Ok(report::ok(Some(g), format!("{} launcher ready", g.short()), json!({"launcher": report::value(&f), "exe": report::path(&exe)})))
         }
     }
 }

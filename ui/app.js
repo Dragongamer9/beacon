@@ -737,6 +737,7 @@ function communityLauncherRows(g) {
   const cl = g.community_launcher;
   if (!cl) return [];
   return [
+    ...launcherDownloadRows(g),
     rowHTML({ key: `cl-get:${g.id}`, label: `Get the ${g.short} launcher`, sub: CL_HOW_TO, value: "Open" }),
     rowHTML({ key: `cl-set:${g.id}`, label: "Use a launcher you downloaded", sub: cl.path || "Its .exe, or the .zip it came in", value: cl.path ? "Change" : "Choose" }),
     ...(cl.path
@@ -754,6 +755,7 @@ function communityLauncherRows(g) {
 
 function wireCommunityLauncher(on, g) {
   if (!g.community_launcher) return;
+  on(`cl-dl:${g.id}`, "click", () => launcherGet(g));
   on(`cl-get:${g.id}`, "click", () => act(() => api.call("open_url", { url: g.community_launcher.url }), "Opened the download folder in your browser"));
   on(`cl-set:${g.id}`, "click", () => chooseCommunityLauncher(g));
   on(`cl-open:${g.id}`, "click", () => openCommunityLauncher(g));
@@ -1063,6 +1065,48 @@ function wireDownloads(on, rows) {
     if (path) setDir(path);
   });
   on("games-dir-default", "click", () => setDir(null));
+}
+
+// Private build: the newest community launcher (UaW's) straight from its Google Drive folder.
+const clGuess = {}; // game id → note, when the folder only turned up a guess
+
+function launcherDownloadRows(g) {
+  if (!dlInfo?.launchers?.includes(g.id)) return [];
+  const have = !!g.community_launcher?.path;
+  const check = dlInfo.checks?.find((c) => c.id === `${g.id}-launcher`);
+  if (clGuess[g.id]) return [rowHTML({ key: `cl-dl:${g.id}`, label: `Download the ${g.short} launcher Beacon found`, sub: `Its usual file changed: ${clGuess[g.id]}`, value: "Use it" })];
+  return [
+    rowHTML({
+      key: `cl-dl:${g.id}`,
+      label: have ? `Update the ${g.short} launcher` : `Download the ${g.short} launcher`,
+      sub: check?.state === "broken" ? `The folder didn't answer at the last check: ${check.detail}` : `The newest version from the community's Google Drive folder, set up for you${check && check.state !== "broken" ? ` · ${check.detail.split(" (")[0]}` : ""}`,
+      value: have ? "Check" : "Download",
+    }),
+  ];
+}
+
+async function launcherGet(g) {
+  if (clBusy) return;
+  clBusy = g.id;
+  showOverlay({ title: `Getting the ${g.short} launcher…`, text: "Looking for the newest version" });
+  try {
+    const r = await api.call("launcher_get", { game: g.id, force: false, acceptGuess: !!clGuess[g.id] });
+    if (r.result === "needs-confirm") {
+      clGuess[g.id] = r.note;
+      hideOverlay();
+      render();
+      toast(`The ${g.short} launcher's usual file changed — check what Beacon found`, true);
+    } else {
+      delete clGuess[g.id];
+      snap = r.snapshot;
+      hideOverlay();
+      render();
+      toast(r.message);
+    }
+  } catch (e) {
+    showOverlay({ title: `Couldn't get the ${g.short} launcher`, text: `${String(e?.message ?? e)} — "Get the ${g.short} launcher" opens the folder to download it by hand.`, error: true, ok: true });
+  }
+  clBusy = null;
 }
 
 function onSourcesChecked({ checks, updated }) {
