@@ -1,12 +1,15 @@
 # Beacon
 
-A launcher for Lord of the Rings games, for Linux and Windows. The shelf has three sections:
+A launcher for Lord of the Rings games, for Linux and Windows. The library lists your games on the left, in two sections:
 
-- **Battle for Middle-earth:** BFME, BFME II, The Rise of the Witch-king, and the fan-made **Age of the Ring Standalone**.
-- **Lord of the Rings games:** **The Lord of the Rings: Conquest** (Pandemic, 2009).
+- **Lord of the Rings:** BFME, BFME II, The Rise of the Witch-king, the fan-made **Age of the Ring Standalone**, and
+  **The Lord of the Rings: Conquest** (Pandemic, 2009).
 - **Other Games:** **Universe at War: Earth Assault**, **Armies of Exigo**, **Rise of Nations: Rise of Legends** and **Star Wars: Galactic Battlegrounds Saga**.
 
-The shelf scrolls sideways and follows your selection. New games are added in `crates/beacon-core/src/games.rs`. It is built for controllers, so it works on handhelds, on a TV, and inside Hearth's Game Mode.
+The selected game fills the right side: its status, Play, its mod and settings, and cards for what it's set up with
+(mod, runner or version, the workshop or community version). New games are added in
+`crates/beacon-core/src/games.rs`. It is built for controllers, so it works on handhelds, on a TV, and inside Hearth's
+Game Mode.
 
 Beacon runs the games directly. It does not wrap the Windows All-in-One launcher (it finds the games that launcher installed, see [below](#bfme-all-in-one-launcher)). On Linux each game gets its own Wine/Proton prefix, holding the registry keys the original installer used to write; on Windows the games run as they are (see [Windows](#windows)). Beacon also sets your resolution and manages mods, including fan content from the [BFME workshop](#workshop).
 
