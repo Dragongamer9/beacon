@@ -268,6 +268,7 @@ function mockApi() {
     sources_update: async () => { await delay(600); return { from: dl.version, to: ++dl.version, skipped: null }; },
     set_updates_repo: ({ repo }) => { if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) throw `"${repo}" isn't a GitHub repo (owner/repo)`; dl.sources_repo = repo; return repo; },
     set_games_dir: ({ path }) => { dl.games_dir = path || "/home/you/.local/share/beacon/games"; dl.custom_games_dir = !!path; },
+    look_for_games: async () => { await delay(300); return []; },
     open_url: () => null,
     pick_folder: async () => { await delay(200); return "/home/you/Games/Picked"; },
     pick_file: async ({ kind }) => { await delay(200); return kind === "mod" ? "/home/you/Downloads/Some Mod.big" : kind === "launcher" ? "/home/you/Downloads/UaW Launcher 1.3.zip" : "/home/you/Downloads/patch.exe"; },

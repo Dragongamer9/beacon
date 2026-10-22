@@ -17,7 +17,7 @@ Beacon runs the games directly. It does not wrap the Windows All-in-One launcher
 
 ## What it does
 
-- **Finds your installs.** It scans `~/Games`, Wine and Bottles prefixes, Steam compatdata, Beacon's own prefixes and removable drives for `lotrbfme.exe`, `lotrbfme2.exe` and `lotrbfme2ep1.exe`, and tells AotR Standalone apart from RotWK.
+- **Finds your installs.** It scans `~/Games`, Wine and Bottles prefixes, Steam compatdata, Beacon's own prefixes and removable drives for `lotrbfme.exe`, `lotrbfme2.exe` and `lotrbfme2ep1.exe`, and tells AotR Standalone apart from RotWK. It does this by itself: a full scan in the background every time Beacon opens, then a quick look every couple of minutes (and whenever you switch back to Beacon) while a game is still missing, so a game shows up as soon as it's installed, whether by its own installer, a launcher, or copied in. **Find games** still does a full scan on demand.
 - **Finds a runner.** In order of preference: GE-Proton, then any Proton, then umu-launcher's UMU-Proton, then system Wine or Lutris Wine. You can override this per game or globally. Proton builds run through `umu-run` when it's installed, so they get the Steam Linux Runtime without Steam.
 - **Builds one prefix per game** in `~/.local/share/beacon/prefixes/<game>/pfx`. On first launch, and whenever the folder, CD key or runner changes, it imports the EA registry keys with Wine's `regedit`:
   - `InstallPath`, `Language`, `UserDataLeafName` and your `ergc` CD key.

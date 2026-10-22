@@ -617,6 +617,68 @@ fn run_cli_if_asked() {
     std::process::exit(127);
 }
 
+#[derive(Clone, Serialize)]
+struct GamesFound {
+    games: Vec<GameId>,
+}
+
+/// Point games that aren't set up yet at what a scan found (on a copy, so the UI never waits on the
+/// disk), save, and tell the UI with `games-found`.
+fn adopt_and_announce(app: &AppHandle, found: &[beacon_core::games::FoundGame]) {
+    if found.is_empty() {
+        return;
+    }
+    let state = app.state::<AppState>();
+    let set = {
+        let mut b = state.beacon.lock().unwrap();
+        let set = b.adopt_found(found);
+        if !set.is_empty() {
+            let _ = b.save();
+        }
+        set
+    };
+    if !set.is_empty() {
+        let _ = app.emit("games-found", GamesFound { games: set.iter().map(|f| f.game).collect() });
+    }
+}
+
+/// Finding games without pressing "Find games": a full scan in the background at start-up, then a
+/// quick look every couple of minutes (and whenever the window comes back to the front, see
+/// `look_for_games`) while any game is still missing, so a game shows up as soon as it's installed:
+/// by its own installer, a launcher, or copied in.
+fn auto_detect(app: &AppHandle) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        let mut work = app.state::<AppState>().beacon.lock().unwrap().clone();
+        if !work.missing_games().is_empty() {
+            work.refresh_runners();
+            let found = work.scan(&[]);
+            adopt_and_announce(&app, &found);
+        }
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(120));
+            let work = app.state::<AppState>().beacon.lock().unwrap().clone();
+            let found = work.quick_find();
+            adopt_and_announce(&app, &found);
+        }
+    });
+}
+
+/// A quick look for games that aren't found yet (the UI calls this when the window gets focus).
+#[tauri::command]
+async fn look_for_games(app: AppHandle) -> CmdResult<Vec<GameId>> {
+    let work = app.state::<AppState>().beacon.lock().unwrap().clone();
+    let found = tauri::async_runtime::spawn_blocking(move || work.quick_find()).await.map_err(err)?;
+    let state = app.state::<AppState>();
+    let mut b = state.beacon.lock().unwrap();
+    let set = b.adopt_found(&found);
+    if !set.is_empty() {
+        b.save().map_err(err)?;
+    }
+    Ok(set.into_iter().map(|f| f.game).collect())
+}
+
 fn main() {
     #[cfg(unix)]
     run_cli_if_asked();
@@ -624,7 +686,7 @@ fn main() {
     beacon_core::downloads::selfupdate::cleanup_old();
 
     let mut beacon = Beacon::load().expect("loading Beacon config");
-    // First run: look for games straight away.
+    // First run: look for games straight away (later starts look in the background, see `auto_detect`).
     if beacon.config.games.is_empty() {
         beacon.scan(&[]);
         let _ = beacon.save();
@@ -641,6 +703,7 @@ fn main() {
                 }
             }
             private::start_background_check(app.handle());
+            auto_detect(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -688,6 +751,7 @@ fn main() {
             private::mod_downloads,
             private::mod_lookup,
             private::mod_install,
+            look_for_games,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Beacon");
