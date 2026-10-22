@@ -15,36 +15,44 @@
     </svg>
   </div>
 
-  <!-- Main layer -->
+  <!-- Main layer: the game list on the left, the selected game on the right. -->
   <div class="layer" id="main-layer">
-    <header class="topbar">
-      <div class="brand">
-        <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><use href="#flame"/></svg>
-        <span>Beacon</span>
-      </div>
-      <div class="topbar-actions">
+    <aside class="library" aria-label="Games">
+      <header class="library-top">
+        <div class="brand">
+          <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><use href="#flame"/></svg>
+          <span>Beacon</span>
+        </div>
+        <span class="clock" id="clock"></span>
+      </header>
+      <nav class="game-list" id="shelf" aria-label="Game list"></nav>
+      <div class="library-actions">
         <button class="nav ghost" id="btn-scan"><svg viewBox="0 0 24 24"><use href="#i-scan"/></svg>Find games</button>
         <button class="nav ghost" id="btn-launcher-settings"><svg viewBox="0 0 24 24"><use href="#i-cog"/></svg>Launcher</button>
-        <span class="clock" id="clock"></span>
       </div>
-    </header>
+    </aside>
 
-    <main class="hero" id="hero">
-      <svg class="hero-emblem" viewBox="0 0 120 120" aria-hidden="true"><use id="hero-emblem" href="#emblem-bfme1"/></svg>
-      <p class="kicker" id="hero-kicker">The Lord of the Rings</p>
-      <h1 id="hero-title">The Battle for Middle-earth</h1>
-      <div class="chips" id="hero-chips"></div>
-      <p class="issue" id="hero-issue" hidden></p>
-      <div class="actions">
-        <button class="nav play" id="btn-play"><svg viewBox="0 0 24 24"><use href="#i-play"/></svg><span id="play-label">Play</span></button>
-        <button class="nav secondary" id="btn-mods"><svg viewBox="0 0 24 24"><use href="#i-scroll"/></svg><span id="mods-label">Vanilla</span></button>
-        <button class="nav secondary" id="btn-game-settings"><svg viewBox="0 0 24 24"><use href="#i-cog"/></svg>Game settings</button>
+    <main class="detail" id="hero">
+      <div class="art" aria-hidden="true">
+        <svg class="art-ridge" viewBox="0 0 1600 300" preserveAspectRatio="none">
+          <path d="M0 300 L0 190 L140 150 L260 182 L380 104 L500 160 L620 86 L740 140 L860 98 L980 170 L1100 80 L1220 146 L1340 112 L1460 176 L1600 136 L1600 300 Z"/>
+        </svg>
+        <svg class="art-emblem" viewBox="0 0 120 120"><use id="hero-emblem" href="#emblem-bfme1"/></svg>
       </div>
+      <div class="detail-body">
+        <p class="kicker" id="hero-kicker">The Lord of the Rings</p>
+        <h1 id="hero-title">The Battle for Middle-earth</h1>
+        <div class="chips" id="hero-chips"></div>
+        <p class="issue" id="hero-issue" hidden></p>
+        <div class="actions">
+          <button class="nav play" id="btn-play"><svg viewBox="0 0 24 24"><use href="#i-play"/></svg><span id="play-label">Play</span></button>
+          <button class="nav secondary" id="btn-mods"><svg viewBox="0 0 24 24"><use href="#i-scroll"/></svg><span id="mods-label">Vanilla</span></button>
+          <button class="nav secondary" id="btn-game-settings"><svg viewBox="0 0 24 24"><use href="#i-cog"/></svg>Game settings</button>
+        </div>
+        <div class="cards" id="hero-cards"></div>
+      </div>
+      <footer class="hints" id="hints"></footer>
     </main>
-
-    <section class="shelf" id="shelf" aria-label="Games"></section>
-
-    <footer class="hints" id="hints"></footer>
   </div>
 
   <!-- Sheets -->

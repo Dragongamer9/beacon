@@ -62,10 +62,10 @@ function modName(g) {
 
 // ---------------------------------------------------------------- main screen
 
-const FAMILIES = [
-  ["bfme", "Battle for Middle-earth"],
-  ["lotr", "Lord of the Rings games"],
-  ["other", "Other Games"],
+// The list's sections: the Battle for Middle-earth games and Conquest are all Lord of the Rings games.
+const SECTIONS = [
+  ["Lord of the Rings", ["bfme", "lotr"]],
+  ["Other Games", ["other"]],
 ];
 const KICKERS = {
   aotr: "Fan-made standalone",
@@ -86,21 +86,22 @@ async function loadCommunity(id) {
 const isSage = (g) => g.family === "bfme";
 
 function buildShelf() {
-  const shelf = $("#shelf");
-  const tile = (g, i) => `
-      <button class="nav tile" data-group="shelf" data-game="${g.id}" data-index="${i}">
-        <svg class="emblem" viewBox="0 0 120 120"><use href="#emblem-${g.id}"/></svg>
-        <span style="min-width:0"><span class="t-short">${esc(g.short)}</span><span class="t-state"><span class="dot"></span><span class="t-text"></span></span></span>
+  const list = $("#shelf");
+  const row = (g, i) => `
+      <button class="nav game-row" data-group="shelf" data-game="${g.id}" data-index="${i}">
+        <span class="swatch" aria-hidden="true"></span>
+        <span class="r-title">${esc(g.title.replace(/^The Lord of the Rings: /, "").replace(/^Star Wars: /, "").replace(/^Rise of Nations: /, ""))}</span>
+        <span class="r-state"></span>
       </button>`;
-  shelf.innerHTML = FAMILIES.map(([fam, label]) => {
-    const members = snap.games.map((g, i) => [g, i]).filter(([g]) => g.family === fam);
+  list.innerHTML = SECTIONS.map(([label, fams]) => {
+    const members = snap.games.map((g, i) => [g, i]).filter(([g]) => fams.includes(g.family));
     if (!members.length) return "";
-    return `<div class="shelf-group" style="flex:${members.length}"><p class="shelf-label">${esc(label)}</p><div class="shelf-tiles">${members.map(([g, i]) => tile(g, i)).join("")}</div></div>`;
+    return `<div class="list-group"><p class="list-label">${esc(label)}</p>${members.map(([g, i]) => row(g, i)).join("")}</div>`;
   }).join("");
-  shelf.querySelectorAll(".tile").forEach((tile) => {
-    const i = Number(tile.dataset.index);
-    tile.addEventListener("focus", () => select(i));
-    tile.addEventListener("click", () => (sel === i ? nav.focus($("#btn-play")) : select(i)));
+  list.querySelectorAll(".game-row").forEach((el) => {
+    const i = Number(el.dataset.index);
+    el.addEventListener("focus", () => select(i));
+    el.addEventListener("click", () => (sel === i ? nav.focus($("#btn-play")) : select(i)));
   });
 }
 
@@ -112,18 +113,38 @@ function select(i) {
 }
 
 function renderShelf() {
-  const current = document.querySelector(`.tile[data-index="${sel}"]`);
+  const current = document.querySelector(`.game-row[data-index="${sel}"]`);
   if (current && renderShelf.last !== sel) {
     renderShelf.last = sel;
     current.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "smooth" });
   }
-  document.querySelectorAll(".tile").forEach((tile) => {
-    const g = snap.games[Number(tile.dataset.index)];
-    tile.classList.toggle("selected", g === game());
-    tile.classList.toggle("is-ready", g.ready);
-    tile.classList.toggle("is-missing", !g.installed);
-    tile.querySelector(".t-text").textContent = isRunning(g.id) ? "Running" : g.ready ? "Ready" : g.installed ? "Needs attention" : "Not found";
+  document.querySelectorAll(".game-row").forEach((el) => {
+    const g = snap.games[Number(el.dataset.index)];
+    const running = isRunning(g.id);
+    el.classList.toggle("selected", g === game());
+    el.classList.toggle("is-ready", g.ready && !running);
+    el.classList.toggle("is-running", running);
+    el.classList.toggle("is-missing", !g.installed);
+    el.querySelector(".r-state").textContent = running ? "Running" : g.ready ? "Ready" : g.installed ? "Needs attention" : "Not installed";
   });
+}
+
+// The cards under the buttons: what this game is set up with, at a glance.
+function heroCards(g) {
+  const card = (label, value, key) =>
+    key
+      ? `<button class="nav card" data-card="${key}"><span class="c-label">${esc(label)}</span><span class="c-value">${esc(value)}</span></button>`
+      : `<div class="card"><span class="c-label">${esc(label)}</span><span class="c-value">${esc(value)}</span></div>`;
+  const out = [];
+  if (!g.installed) return "";
+  out.push(card("Mod", modName(g), "mods"));
+  const req = g.requires && snap.games.find((x) => x.id === g.requires);
+  if (req) out.push(card("Needs", `${req.short} · ${req.installed ? "installed" : "not installed"}`));
+  else if (g.edition) out.push(card("Version", g.edition, "settings"));
+  else if (!snap.native && g.runner) out.push(card("Runner", g.runner.name, "settings"));
+  if (WORKSHOP_GAMES.includes(g.id)) out.push(card("Workshop", "Browse fan mods", "workshop"));
+  else if (g.has_community) out.push(card("Community version", g.edition ? "Set up" : "Set it up", "settings"));
+  return out.join("");
 }
 
 function renderHero() {
@@ -136,9 +157,8 @@ function renderHero() {
   const chips = [];
   if (running) chips.push(`<span class="chip run"><span class="dot"></span>Running</span>`);
   else if (g.ready) chips.push(`<span class="chip ok"><span class="dot"></span>Ready</span>`);
-  else chips.push(`<span class="chip bad"><span class="dot"></span>${g.installed ? "Needs attention" : "Not found"}</span>`);
-  if (g.runner) chips.push(`<span class="chip">${esc(g.runner.name)}</span>`);
-  if (g.edition) chips.push(`<span class="chip">${esc(g.edition)}</span>`);
+  else chips.push(`<span class="chip bad"><span class="dot"></span>${g.installed ? "Needs attention" : "Not installed"}</span>`);
+  if (g.runner && !snap.native) chips.push(`<span class="chip">${esc(g.runner.name)}</span>`);
   if (isSage(g)) chips.push(`<span class="chip">${g.resolution ? resText(g.resolution) : "Game's resolution"}${g.windowed ? " · windowed" : ""}</span>`);
   $("#hero-chips").innerHTML = chips.join("");
 
@@ -158,6 +178,19 @@ function renderHero() {
     play.disabled = running || !g.ready;
   }
   $("#mods-label").textContent = modName(g);
+
+  const cards = $("#hero-cards");
+  const keep = nav.current()?.dataset.card;
+  cards.innerHTML = heroCards(g);
+  cards.querySelectorAll("[data-card]").forEach((el) => {
+    const k = el.dataset.card;
+    el.addEventListener("click", () => {
+      if (k === "mods") loadMods(game().id).then(() => open("mods", $("#sheet-mods")));
+      else if (k === "workshop") openWorkshop();
+      else openGameSheet();
+    });
+  });
+  if (keep && !openSheet) nav.refocus(`[data-card="${CSS.escape(keep)}"]`);
 }
 
 function renderHints(pad = renderHints.pad) {
@@ -1193,8 +1226,8 @@ nav.onShortcut((b) => {
   if (b === "lb" || b === "rb") {
     if (openSheet) return;
     select(sel + (b === "lb" ? -1 : 1));
-    const tile = document.querySelector(`.tile[data-index="${sel}"]`);
-    if (nav.current()?.classList.contains("tile")) nav.focus(tile);
+    const row = document.querySelector(`.game-row[data-index="${sel}"]`);
+    if (nav.current()?.classList.contains("game-row")) nav.focus(row);
   } else if (b === "x") {
     if (openSheet === "game") closeSheet();
     else if (!openSheet) openGameSheet();
