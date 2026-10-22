@@ -81,7 +81,7 @@ function mockApi() {
     rol: { editions: [], steps: [step("patch", "Latest official patch", "From Rise of Legends Heaven.", "installer"), step("crash-fix", "Long-game crash fix", "Community fix for long sessions.", "merge"), step("user-patch", "User Patch Project", "Community patch in progress.", "link")] },
   };
   const snap = () => structuredClone(state);
-  const dl = { version: 1, built_in: true, sources_repo: "Dragongamer9/beacon-private", token_set: false, games_dir: "/home/you/.local/share/beacon/games", custom_games_dir: false, learned_api: null, checks: null, games: ["bfme1", "bfme2", "rotwk", "rol"], launchers: ["uaw"], archive_launchers: {} };
+  const dl = { version: 1, built_in: true, sources_repo: "Dragongamer9/beacon-private", games_dir: "/home/you/.local/share/beacon/games", custom_games_dir: false, learned_api: null, checks: null, games: ["bfme1", "bfme2", "rotwk", "rol"], launchers: ["uaw"], archive_launchers: {} };
   const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
   const handlers = {
@@ -249,7 +249,7 @@ function mockApi() {
       cl.path = "/home/you/.local/share/beacon/tools/uaw-launcher/UaW Launcher 1.4/UaW Launcher.exe";
       return { result: "done", snapshot: snap(), message: "UaW Launcher 1.4.zip ready — open it to download the game" };
     },
-    app_update_check: async () => { await delay(500); return { current: "0.0.9", latest: { version: "0.0.10", tag: "v0.0.10", url: "", notes: "", assets: [] }, newer: dl.token_set, problem: dl.token_set ? null : "set the GitHub token (Launcher settings → Downloads) so Beacon can see its private releases", method: { kind: "app-image" } }; },
+    app_update_check: async () => { await delay(500); return { current: "0.0.9", latest: { version: "0.0.10", tag: "v0.0.10", url: "", notes: "", assets: [] }, newer: true, problem: null, method: { kind: "app-image" } }; },
     app_update_apply: async () => {
       for (const [pct, text] of [[null, "Looking for the newest Beacon"], [40, "Downloading Beacon 0.0.10"], [96, "Checking the download"], [98, "Putting the new version in place"]]) {
         emit("app-update-progress", { pct, text });
@@ -257,8 +257,8 @@ function mockApi() {
       }
       return { next: "restart", program: "/home/you/Beacon.AppImage" };
     },
-    sources_update: async () => { await delay(600); return dl.token_set ? { from: dl.version, to: ++dl.version, skipped: null } : { from: dl.version, to: dl.version, skipped: "no GitHub token set" }; },
-    set_github_token: ({ token }) => { dl.token_set = !!token.trim(); },
+    sources_update: async () => { await delay(600); return { from: dl.version, to: ++dl.version, skipped: null }; },
+    set_updates_repo: ({ repo }) => { if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) throw `"${repo}" isn't a GitHub repo (owner/repo)`; dl.sources_repo = repo; return repo; },
     set_games_dir: ({ path }) => { dl.games_dir = path || "/home/you/.local/share/beacon/games"; dl.custom_games_dir = !!path; },
     open_url: () => null,
     pick_folder: async () => { await delay(200); return "/home/you/Games/Picked"; },

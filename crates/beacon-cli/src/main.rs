@@ -1041,7 +1041,8 @@ mod tests {
         assert!(matches!(parse(&["beacon", "get", "rotwk", "--repair"]).cmd, Some(Cmd::Get { repair: true, verify: false, yes: false, .. })));
         assert!(matches!(parse(&["beacon", "sources"]).cmd, Some(Cmd::Sources { action: None })));
         assert!(matches!(parse(&["beacon", "sources", "check", "--json"]).cmd, Some(Cmd::Sources { action: Some(private::SourcesAction::Check) })));
-        assert!(Cli::try_parse_from(["beacon", "sources", "token", "ghp_x"]).is_err());
+        assert!(Cli::try_parse_from(["beacon", "sources", "token"]).is_err());
+        assert!(matches!(parse(&["beacon", "sources", "repo", "Dragongamer9/beacon"]).cmd, Some(Cmd::Sources { action: Some(private::SourcesAction::Repo { .. }) })));
         assert!(matches!(parse(&["beacon", "self-update", "--check"]).cmd, Some(Cmd::SelfUpdate { check: true })));
     }
 

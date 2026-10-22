@@ -36,7 +36,6 @@ pub fn downloads_info(state: State<AppState>) -> Value {
         "version": list.version,
         "built_in": list == sources::SourceList::bundled(),
         "sources_repo": s.sources_repo,
-        "token_set": s.github_token.as_deref().map(|t| !t.is_empty()).unwrap_or(false),
         "games_dir": b.games_root(),
         "custom_games_dir": s.games_dir.is_some(),
         "learned_api": store.learned().workshop_api,
@@ -128,16 +127,15 @@ pub async fn sources_update(app: AppHandle) -> CmdResult<sources::Update> {
     tauri::async_runtime::spawn_blocking(move || store.update(&Client::new(), true)).await.map_err(err)?.map_err(|e| format!("{e:#}"))
 }
 
+/// The public GitHub repo (owner/repo) Beacon updates itself and `sources.json` from.
 #[tauri::command]
-pub fn set_github_token(state: State<AppState>, token: String) -> CmdResult<()> {
+pub fn set_updates_repo(state: State<AppState>, repo: String) -> CmdResult<String> {
+    let r = sources::check_repo(&repo).map_err(|e| format!("{e:#}"))?;
     let store = state.beacon.lock().unwrap().download_store();
     let mut s = store.settings();
-    let t = token.trim();
-    if t.chars().any(|c| c.is_whitespace() || c.is_control()) {
-        return Err("that doesn't look like a GitHub token".into());
-    }
-    s.github_token = (!t.is_empty()).then(|| t.to_string());
-    store.save_settings(&s).map_err(err)
+    s.sources_repo = r.clone();
+    store.save_settings(&s).map_err(err)?;
+    Ok(r)
 }
 
 #[tauri::command]

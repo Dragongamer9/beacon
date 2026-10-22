@@ -680,7 +680,7 @@ fn main() {
             private::cdn_get,
             private::sources_check,
             private::sources_update,
-            private::set_github_token,
+            private::set_updates_repo,
             private::set_games_dir,
             private::launcher_get,
             private::app_update_check,

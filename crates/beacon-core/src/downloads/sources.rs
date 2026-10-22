@@ -205,14 +205,15 @@ impl SourceList {
 
 // ---------------------------------------------------------------- where things live
 
-/// Private-build settings (`<config dir>/private.json`, readable only by you).
+/// Private-build settings (`<config dir>/private.json`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PrivateSettings {
-    /// Where `sources.json` updates come from: `owner/repo`.
+    /// The public GitHub repo (`owner/repo`) that Beacon updates itself and `sources.json` from.
     pub sources_repo: String,
     pub sources_branch: String,
-    /// A read-only (Contents: read) GitHub token for that repo.
+    /// No longer used (updates come from a public repo); an old token is read and dropped on the next save.
+    #[serde(skip_serializing)]
     pub github_token: Option<String>,
     /// Where downloaded games go (default `<data>/games`).
     pub games_dir: Option<PathBuf>,
@@ -293,14 +294,11 @@ impl Store {
         Some(UNIX_EPOCH + Duration::from_secs(secs))
     }
 
-    /// Fetch `sources.json` from the private repo; keep it when it's newer.
+    /// Fetch `sources.json` from the updates repo (public, no login); keep it when it's newer.
     /// Without `force`, does nothing when it looked less than [`UPDATE_EVERY`] ago.
     pub fn update(&self, t: &dyn Transfer, force: bool) -> Result<Update> {
         let current = self.list().version;
         let s = self.settings();
-        let Some(token) = s.github_token.as_deref().map(str::trim).filter(|t| !t.is_empty()) else {
-            return Ok(Update { from: current, to: current, skipped: Some("no GitHub token set (`beacon sources token`)".into()) });
-        };
         if !force {
             if let Some(last) = self.last_update() {
                 if SystemTime::now().duration_since(last).map(|d| d < UPDATE_EVERY).unwrap_or(true) {
@@ -308,21 +306,13 @@ impl Store {
                 }
             }
         }
-        let repo = s.sources_repo.trim();
-        if repo.split('/').count() != 2 || repo.chars().any(|c| !(c.is_ascii_alphanumeric() || "-_./".contains(c))) {
-            bail!("sources_repo {repo:?} isn't owner/repo");
-        }
+        let repo = check_repo(&s.sources_repo)?;
         let branch: String = s.sources_branch.chars().filter(|c| c.is_ascii_alphanumeric() || "-_./".contains(*c)).collect();
-        let url = format!("https://api.github.com/repos/{repo}/contents/sources.json?ref={branch}");
-        let headers = [
-            ("Authorization", format!("Bearer {token}")),
-            ("Accept", "application/vnd.github.raw+json".to_string()),
-            ("X-GitHub-Api-Version", "2022-11-28".to_string()),
-        ];
-        let body = t.get_text(&url, &headers, super::MAX_TEXT_BYTES).map_err(|e| {
+        let url = format!("https://raw.githubusercontent.com/{repo}/{branch}/sources.json");
+        let body = t.get_text(&url, &[], super::MAX_TEXT_BYTES).map_err(|e| {
             let m = format!("{e:#}");
-            if m.contains("HTTP 401") || m.contains("HTTP 403") || m.contains("HTTP 404") {
-                anyhow!("{m}: check the GitHub token (it needs Contents: read on {repo})")
+            if m.contains("HTTP 404") || m.contains("HTTP 403") || m.contains("HTTP 401") {
+                anyhow!("{m}: {repo} has no public sources.json on {branch} (is the repo public?)")
             } else {
                 e
             }
@@ -338,6 +328,16 @@ impl Store {
             Ok(Update { from: current, to: current, skipped: None })
         }
     }
+}
+
+/// `owner/repo`, trimmed, or an error.
+pub fn check_repo(repo: &str) -> Result<String> {
+    let r = repo.trim().trim_start_matches("https://github.com/").trim_end_matches('/').trim_end_matches(".git");
+    let parts: Vec<&str> = r.split('/').collect();
+    if parts.len() != 2 || parts.iter().any(|p| p.is_empty() || *p == "." || *p == "..") || r.chars().any(|c| !(c.is_ascii_alphanumeric() || "-_./".contains(c))) {
+        bail!("{repo:?} isn't a GitHub repo (owner/repo)");
+    }
+    Ok(r.to_string())
 }
 
 /// What `update` did.
@@ -358,7 +358,7 @@ fn write_atomic(path: &Path, text: &str) -> Result<()> {
     std::fs::rename(&tmp, path).with_context(|| format!("writing {}", path.display()))
 }
 
-/// Write a file only its owner can read (it holds the GitHub token).
+/// Write a file only its owner can read.
 fn write_private(path: &Path, text: &str) -> Result<()> {
     if let Some(d) = path.parent() {
         std::fs::create_dir_all(d)?;
@@ -890,30 +890,32 @@ mod tests {
     }
 
     #[test]
-    fn newer_downloaded_list_wins_and_token_file_is_private() {
+    fn newer_downloaded_list_wins_without_a_login() {
         let t = tempfile::tempdir().unwrap();
         let store = Store::new(&t.path().join("cfg/config.json"), &t.path().join("data"));
         assert_eq!(store.list(), SourceList::bundled());
         let mut newer: Value = serde_json::from_str(BUNDLED).unwrap();
         newer["version"] = json!(SourceList::bundled().version + 5);
-        let net = FakeNet::with(&[(
-            "https://api.github.com/repos/Dragongamer9/beacon-private/contents/sources.json?ref=main",
-            newer.to_string().as_bytes(),
-        )]);
-        // No token: nothing fetched.
-        assert!(store.update(&net, true).unwrap().skipped.is_some());
-        let mut s = store.settings();
-        s.github_token = Some("tok".into());
-        store.save_settings(&s).unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            assert_eq!(std::fs::metadata(&store.settings_file).unwrap().permissions().mode() & 0o777, 0o600);
-        }
+        let net = FakeNet::with(&[("https://raw.githubusercontent.com/Dragongamer9/beacon-private/main/sources.json", newer.to_string().as_bytes())]);
         let u = store.update(&net, true).unwrap();
         assert_eq!(u.to, SourceList::bundled().version + 5);
         assert_eq!(store.list().version, u.to);
         // Recently checked: not again unless forced.
         assert!(store.update(&net, false).unwrap().skipped.is_some());
+        // An old token in private.json is dropped on the next save.
+        std::fs::write(&store.settings_file, r#"{"sources_repo": "a/b", "github_token": "ghp_old"}"#).unwrap();
+        let s = store.settings();
+        assert_eq!(s.sources_repo, "a/b");
+        store.save_settings(&s).unwrap();
+        assert!(!std::fs::read_to_string(&store.settings_file).unwrap().contains("ghp_old"));
+    }
+
+    #[test]
+    fn repos() {
+        assert_eq!(check_repo(" https://github.com/Dragongamer9/beacon/ ").unwrap(), "Dragongamer9/beacon");
+        assert_eq!(check_repo("a/b.git").unwrap(), "a/b");
+        assert!(check_repo("a").is_err());
+        assert!(check_repo("a/../b").is_err());
+        assert!(check_repo("a/b c").is_err());
     }
 }
