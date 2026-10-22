@@ -485,7 +485,7 @@ function renderGameSheet() {
     ...(!aotr && !g.installed
       ? [
           // Private build: Beacon downloads the BFME games itself, from the BFME Foundation's CDN.
-          ...(WORKSHOP_GAMES.includes(g.id) ? cdnRows(g) : []),
+          ...(dlInfo?.games?.includes(g.id) ? cdnRows(g) : []),
           // Or the BFME Foundation's launcher downloads them, Beacon finds them.
           ...(WORKSHOP_GAMES.includes(g.id) ? aioRows() : []),
           ...(g.store_url ? [rowHTML({ key: "store", label: "Get it on Steam", sub: "Still sold — opens the store page", value: "Open" })] : []),
@@ -945,6 +945,8 @@ function cdnRows(g) {
     ];
   }
   const withB2 = g.id === "rotwk" && !snap.games.find((x) => x.id === "bfme2")?.installed;
+  const bfme = WORKSHOP_GAMES.includes(g.id);
+  const launcherExe = dlInfo?.archive_launchers?.[g.id];
   const check = dlInfo?.checks?.find((c) => c.id === g.id);
   const broken = check?.state === "broken";
   return [
@@ -953,9 +955,12 @@ function cdnRows(g) {
       label: `Download ${g.short}`,
       sub: broken
         ? `The source didn't answer at the last check: ${check.detail}`
-        : `Straight from the BFME Foundation's servers${withB2 ? " · BFME II comes along" : ""} · resumes if it stops${check?.state === "ok" || check?.state === "moved" ? ` · ${check.detail.split(" (")[0]}` : ""}`,
+        : `${bfme ? "Straight from the BFME Foundation's servers" : "From its Google Drive download, extracted and set up"}${withB2 ? " · BFME II comes along" : ""} · resumes if it stops${check?.state === "ok" || check?.state === "moved" ? ` · ${check.detail.split(" (")[0]}` : ""}`,
       value: "Download",
     }),
+    ...(launcherExe
+      ? [rowHTML({ key: "cdn-run-launcher", label: `Run the ${g.short} launcher again`, sub: `${launcherExe} · in ${g.short}'s own prefix; Beacon finds the game when it closes`, value: "Run" })]
+      : []),
   ];
 }
 
@@ -964,6 +969,7 @@ function wireCdn(on, g) {
   on("cdn-guess", "click", () => cdnGet(g, { acceptGuess: true }));
   on("cdn-repair", "click", () => cdnGet(g, { repair: true }));
   on("cdn-verify", "click", () => cdnGet(g, { verify: true }));
+  on("cdn-run-launcher", "click", () => runInstaller(g, dlInfo.archive_launchers[g.id]));
 }
 
 async function cdnGet(g, { repair = false, verify = false, acceptGuess = false }) {
@@ -984,6 +990,11 @@ async function cdnGet(g, { repair = false, verify = false, acceptGuess = false }
       hideOverlay();
       render();
       toast(r.notes?.length ? `${r.message} (${r.notes.join("; ")})` : r.message);
+      // The download held a launcher or installer, not the game: run it in the game's prefix.
+      if (r.launcher) {
+        cdnBusy = null;
+        return runInstaller(g, r.launcher);
+      }
     }
   } catch (e) {
     showOverlay({ title: `Couldn't download ${g.short}`, text: `${String(e?.message ?? e)} — run it again to pick up where it stopped.`, error: true, ok: true });

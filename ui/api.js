@@ -81,7 +81,7 @@ function mockApi() {
     rol: { editions: [], steps: [step("patch", "Latest official patch", "From Rise of Legends Heaven.", "installer"), step("crash-fix", "Long-game crash fix", "Community fix for long sessions.", "merge"), step("user-patch", "User Patch Project", "Community patch in progress.", "link")] },
   };
   const snap = () => structuredClone(state);
-  const dl = { version: 1, built_in: true, sources_repo: "Dragongamer9/beacon-private", token_set: false, games_dir: "/home/you/.local/share/beacon/games", custom_games_dir: false, learned_api: null, checks: null, games: ["bfme1", "bfme2", "rotwk"], launchers: ["uaw"] };
+  const dl = { version: 1, built_in: true, sources_repo: "Dragongamer9/beacon-private", token_set: false, games_dir: "/home/you/.local/share/beacon/games", custom_games_dir: false, learned_api: null, checks: null, games: ["bfme1", "bfme2", "rotwk", "rol"], launchers: ["uaw"], archive_launchers: {} };
   const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
   const handlers = {
@@ -211,6 +211,14 @@ function mockApi() {
       if (g === "bfme1" && !acceptGuess && !dl.guessed) {
         dl.guessed = true;
         return { result: "needs-confirm", game: g, note: "original-BFME1 is gone; the closest package is original-BFME1-v2 (Vanilla (1.03))" };
+      }
+      if (g === "rol") {
+        for (const pct of [null, 20, 60, 89, 90, 97]) {
+          emit("cdn-progress", { game: g, pct, text: pct === 90 ? "Extracting Rise Of Legends Game Files.zip" : pct === 97 ? "Putting the game in place" : "Downloading Rise Of Legends Game Files.zip" });
+          await delay(300);
+        }
+        Object.assign(game(g), { path: `${dl.games_dir}/Rise of Legends`, installed: true, ready: true, issues: [] });
+        return { result: "done", snapshot: snap(), message: "RoL downloaded and ready", launcher: null };
       }
       const order = g === "rotwk" && !game("bfme2").installed ? ["bfme2", "rotwk"] : [g];
       for (const id of order) {

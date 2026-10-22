@@ -4,7 +4,7 @@
 //! start-up check of the sources as `sources-checked`.
 
 use crate::{err, snapshot, AppState, CmdResult};
-use beacon_core::downloads::{basegame, launcher, sources, Client};
+use beacon_core::downloads::{archive, basegame, launcher, sources, Client};
 use beacon_core::games::GameId;
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -36,7 +36,8 @@ pub fn downloads_info(state: State<AppState>) -> Value {
         "custom_games_dir": s.games_dir.is_some(),
         "learned_api": store.learned().workshop_api,
         "checks": checks,
-        "games": ["bfme1", "bfme2", "rotwk"],
+        "games": ["bfme1", "bfme2", "rotwk"].into_iter().map(String::from).chain(list.sources.iter().filter_map(|s| s.archive_for).map(|g| g.slug().to_string())).collect::<Vec<_>>(),
+        "archive_launchers": b.archive_launchers().exes,
         "launchers": list.sources.iter().filter_map(|s| s.launcher_for).collect::<Vec<GameId>>(),
     })
 }
@@ -47,7 +48,7 @@ pub fn downloads_info(state: State<AppState>) -> Value {
 #[tauri::command]
 pub async fn cdn_get(app: AppHandle, game: GameId, repair: bool, verify: bool, accept_guess: bool) -> CmdResult<Value> {
     if !basegame::supported(game) {
-        return Err(format!("{} isn't on the BFME Foundation's CDN", game.short()));
+        return archive_get(app, game, accept_guess).await;
     }
     let b = app.state::<AppState>().beacon.lock().unwrap().clone();
     let app2 = app.clone();
@@ -213,4 +214,57 @@ pub async fn launcher_get(app: AppHandle, game: GameId, force: bool, accept_gues
         message.push_str(&format!(" ({n})"));
     }
     Ok(json!({"result": "done", "snapshot": snapshot(&state), "message": message}))
+}
+
+/// A game delivered as one archive (Rise of Legends): download, extract, then either point Beacon at
+/// the game or hand back the launcher/installer it held (`launcher`), which the UI runs in the prefix.
+async fn archive_get(app: AppHandle, game: GameId, accept_guess: bool) -> CmdResult<Value> {
+    let b = app.state::<AppState>().beacon.lock().unwrap().clone();
+    if !b.has_archive_source(game) {
+        return Err(format!("Beacon has no download for {}", game.short()));
+    }
+    let app2 = app.clone();
+    let out = tauri::async_runtime::spawn_blocking(move || -> anyhow::Result<Result<(archive::Fetched, archive::Unpacked), String>> {
+        let mut last = std::time::Instant::now() - Duration::from_secs(1);
+        let mut last_pct = None;
+        let mut progress = |pct: Option<u8>, text: &str| {
+            if pct != last_pct || last.elapsed() >= Duration::from_millis(120) {
+                last = std::time::Instant::now();
+                last_pct = pct;
+                let _ = app2.emit("cdn-progress", CdnProgress { game, pct, text: text.to_string() });
+            }
+        };
+        match b.archive_download(&Client::new(), game, accept_guess, &mut progress)? {
+            archive::Outcome::NeedsConfirm { note, .. } => Ok(Err(note)),
+            archive::Outcome::Ready(f) => {
+                let u = b.archive_unpack(game, &f.file, &mut progress)?;
+                Ok(Ok((f, u)))
+            }
+        }
+    })
+    .await
+    .map_err(err)?
+    .map_err(|e| format!("{e:#}"))?;
+    let (f, u) = match out {
+        Err(note) => return Ok(json!({"result": "needs-confirm", "game": game, "note": note})),
+        Ok(x) => x,
+    };
+    let state = app.state::<AppState>();
+    {
+        let mut b = state.beacon.lock().unwrap();
+        b.archive_adopt(&u).map_err(|e| format!("{e:#}"))?;
+        b.save().map_err(err)?;
+    }
+    let mut message = match &u {
+        archive::Unpacked::Game { .. } => format!("{} downloaded and ready", game.short()),
+        archive::Unpacked::Launcher { .. } => format!("{} held a launcher — starting it in {}'s prefix", f.name, game.short()),
+    };
+    if let Some(n) = &f.note {
+        message.push_str(&format!(" ({n})"));
+    }
+    let launcher = match &u {
+        archive::Unpacked::Launcher { exe, .. } => Some(exe.clone()),
+        _ => None,
+    };
+    Ok(json!({"result": "done", "snapshot": snapshot(&state), "message": message, "launcher": launcher}))
 }

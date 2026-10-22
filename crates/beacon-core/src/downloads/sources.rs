@@ -80,6 +80,12 @@ pub struct Source {
     /// The game whose community launcher this is (UaW).
     #[serde(default)]
     pub launcher_for: Option<GameId>,
+    /// The game this archive holds, ready to play (extracted into the games folder).
+    #[serde(default)]
+    pub archive_for: Option<GameId>,
+    /// The folder name under the games folder, for `archive_for` (default: the game's id).
+    #[serde(default)]
+    pub install_folder: Option<String>,
     #[serde(flatten)]
     pub kind: Kind,
 }
@@ -119,6 +125,13 @@ pub enum Kind {
         #[serde(default = "one")]
         depth: u8,
     },
+    /// A single public Google Drive file (its id, or a `…/file/d/<id>/…` link).
+    DriveFile {
+        file: String,
+        /// Its name, for messages and the downloaded file (Drive doesn't say without an API key).
+        #[serde(default)]
+        name: Option<String>,
+    },
     Direct {
         url: String,
         #[serde(default)]
@@ -149,6 +162,11 @@ impl SourceList {
                 Kind::Direct { url, .. } => vec![url.as_str()],
                 _ => vec![],
             };
+            if let Kind::DriveFile { file, .. } = &s.kind {
+                if super::drive::file_id(file).is_none() {
+                    bail!("sources.json: {} needs a Drive file id or link", s.id);
+                }
+            }
             if let Kind::DriveFolder { folder, patterns, .. } = &s.kind {
                 if super::drive::folder_id(folder).is_none() || patterns.is_empty() {
                     bail!("sources.json: {} needs a Drive folder id and at least one pattern", s.id);
@@ -172,6 +190,11 @@ impl SourceList {
     /// The source that installs a game's base files.
     pub fn for_game(&self, g: GameId) -> Option<&Source> {
         self.sources.iter().find(|s| s.game == Some(g))
+    }
+
+    /// The source of a game's ready-to-play archive.
+    pub fn archive_for(&self, g: GameId) -> Option<&Source> {
+        self.sources.iter().find(|s| s.archive_for == Some(g))
     }
 
     /// The source of a game's community launcher.
@@ -461,6 +484,12 @@ pub fn resolve(t: &dyn Transfer, list: &SourceList, learned: &mut Learned, src: 
         Kind::Github { repo, asset } => {
             let (url, name, size, how) = resolve_github(t, repo, asset)?;
             r(how, Target::File { url, name, size, md5: None })
+        }
+        Kind::DriveFile { file, name } => {
+            let id = super::drive::file_id(file).ok_or_else(|| anyhow!("{} isn't a Drive file", src.id))?;
+            let (url, size) = super::drive::download_url(t, &id)?;
+            let name = name.clone().unwrap_or_else(|| format!("{id}.zip"));
+            r(How::Listed, Target::File { url, name, size, md5: None })
         }
         Kind::DriveFolder { folder, patterns, prefer, depth } => {
             let folder = super::drive::folder_id(folder).ok_or_else(|| anyhow!("{} isn't a Drive folder", src.id))?;

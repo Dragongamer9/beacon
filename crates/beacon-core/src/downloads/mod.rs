@@ -11,6 +11,7 @@
 //! * This file: the transfer layer: https only, resumable `.part` files,
 //!   size and MD5 checks, size limits.
 
+pub mod archive;
 pub mod basegame;
 pub mod drive;
 pub mod launcher;
