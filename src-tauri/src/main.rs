@@ -18,6 +18,9 @@ use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
+/// Private build: downloads.
+mod private;
+
 struct AppState {
     beacon: Mutex<Beacon>,
     running: Mutex<BTreeSet<GameId>>,
@@ -635,6 +638,7 @@ fn main() {
                     let _ = w.set_fullscreen(true);
                 }
             }
+            private::start_background_check(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -670,6 +674,12 @@ fn main() {
             pick_file,
             open_path,
             open_log,
+            private::downloads_info,
+            private::cdn_get,
+            private::sources_check,
+            private::sources_update,
+            private::set_github_token,
+            private::set_games_dir,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Beacon");
