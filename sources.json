@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "version": 1,
+  "workshop": {
+    "api": "https://bfmeladder.com/api",
+    "discover": [
+      "https://raw.githubusercontent.com/MarcellVokk/BfmeFoundationProject/master/src/BfmeFoundationProject_WorkshopKit/Logic/BfmeWorkshopManager.cs",
+      "https://raw.githubusercontent.com/MarcellVokk/BfmeFoundationProject/main/src/BfmeFoundationProject_WorkshopKit/Logic/BfmeWorkshopManager.cs"
+    ],
+    "discover_pattern": "WorkshopServerHost = \"",
+    "api_suffix": "/api"
+  },
+  "sources": [
+    {
+      "id": "bfme1",
+      "title": "The Battle for Middle-earth",
+      "game": "bfme1",
+      "kind": "workshop",
+      "guid": "original-BFME1",
+      "guid_prefix": "original-"
+    },
+    {
+      "id": "bfme2",
+      "title": "The Battle for Middle-earth II",
+      "game": "bfme2",
+      "kind": "workshop",
+      "guid": "original-BFME2",
+      "guid_prefix": "original-"
+    },
+    {
+      "id": "rotwk",
+      "title": "The Rise of the Witch-king",
+      "game": "rotwk",
+      "kind": "workshop",
+      "guid": "original-RotWK",
+      "guid_prefix": "original-"
+    }
+  ]
+}

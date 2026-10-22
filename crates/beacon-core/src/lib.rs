@@ -18,6 +18,8 @@ pub mod aio_launcher;
 pub mod catalog;
 pub mod community_launcher;
 pub mod config;
+/// Private build: Beacon's own downloads (see `downloads/mod.rs`).
+pub mod downloads;
 pub mod editions;
 pub mod games;
 pub mod installs;
@@ -251,6 +253,8 @@ impl Beacon {
         let mut roots = games::default_scan_roots(&self.paths.home);
         // Games installed through Beacon live inside its own prefixes.
         roots.push(self.paths.data_dir.join("prefixes"));
+        // Private build: games Beacon downloaded itself.
+        roots.push(self.games_root());
         roots.extend(self.config.scan_roots.iter().cloned());
         roots
     }
