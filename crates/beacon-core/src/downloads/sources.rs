@@ -903,6 +903,7 @@ mod tests {
         // Recently checked: not again unless forced.
         assert!(store.update(&net, false).unwrap().skipped.is_some());
         // An old token in private.json is dropped on the next save.
+        std::fs::create_dir_all(store.settings_file.parent().unwrap()).unwrap();
         std::fs::write(&store.settings_file, r#"{"sources_repo": "a/b", "github_token": "ghp_old"}"#).unwrap();
         let s = store.settings();
         assert_eq!(s.sources_repo, "a/b");
