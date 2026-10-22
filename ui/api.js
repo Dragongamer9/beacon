@@ -249,6 +249,14 @@ function mockApi() {
       cl.path = "/home/you/.local/share/beacon/tools/uaw-launcher/UaW Launcher 1.4/UaW Launcher.exe";
       return { result: "done", snapshot: snap(), message: "UaW Launcher 1.4.zip ready — open it to download the game" };
     },
+    app_update_check: async () => { await delay(500); return { current: "0.0.9", latest: { version: "0.0.10", tag: "v0.0.10", url: "", notes: "", assets: [] }, newer: dl.token_set, problem: dl.token_set ? null : "set the GitHub token (Launcher settings → Downloads) so Beacon can see its private releases", method: { kind: "app-image" } }; },
+    app_update_apply: async () => {
+      for (const [pct, text] of [[null, "Looking for the newest Beacon"], [40, "Downloading Beacon 0.0.10"], [96, "Checking the download"], [98, "Putting the new version in place"]]) {
+        emit("app-update-progress", { pct, text });
+        await delay(400);
+      }
+      return { next: "restart", program: "/home/you/Beacon.AppImage" };
+    },
     sources_update: async () => { await delay(600); return dl.token_set ? { from: dl.version, to: ++dl.version, skipped: null } : { from: dl.version, to: dl.version, skipped: "no GitHub token set" }; },
     set_github_token: ({ token }) => { dl.token_set = !!token.trim(); },
     set_games_dir: ({ path }) => { dl.games_dir = path || "/home/you/.local/share/beacon/games"; dl.custom_games_dir = !!path; },

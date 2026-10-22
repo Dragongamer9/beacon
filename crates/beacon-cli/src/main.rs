@@ -171,6 +171,12 @@ enum Cmd {
         #[arg(long)]
         yes: bool,
     },
+    /// Private build: update Beacon itself from the private repo's newest release.
+    SelfUpdate {
+        /// Only say whether there's a newer version.
+        #[arg(long)]
+        check: bool,
+    },
     /// Private build: the download sources (list, check, update, token, games-dir).
     Sources {
         #[command(subcommand)]
@@ -182,7 +188,7 @@ enum Cmd {
 enum CommunityAction {
     /// Which launcher is chosen, where it's downloaded from.
     Status,
-    /// Use a launcher you downloaded: its .exe (copied) or the .zip it came in (extracted). Beacon never downloads it.
+    /// Use a launcher you downloaded: its .exe (copied) or the .zip, .7z or .rar it came in (extracted). Beacon never downloads it.
     Set { path: PathBuf },
     /// Start it (Linux: in the game's own Wine prefix). Download the game there; `status` and `scan` find it.
     Open,
@@ -961,6 +967,7 @@ fn run(ctx: &Ctx, b: &mut Beacon, cmd: Cmd) -> Result<Value> {
         }
         Cmd::Get { game: g, repair, verify, yes } => private::get(ctx, b, &g, repair, verify, yes)?,
         Cmd::Sources { action } => private::sources_cmd(ctx, b, action)?,
+        Cmd::SelfUpdate { check } => private::self_update(ctx, b, check)?,
         Cmd::Paths => {
             if !ctx.json {
                 println!("config:   {}", b.paths.config_file.display());
@@ -1035,6 +1042,7 @@ mod tests {
         assert!(matches!(parse(&["beacon", "sources"]).cmd, Some(Cmd::Sources { action: None })));
         assert!(matches!(parse(&["beacon", "sources", "check", "--json"]).cmd, Some(Cmd::Sources { action: Some(private::SourcesAction::Check) })));
         assert!(Cli::try_parse_from(["beacon", "sources", "token", "ghp_x"]).is_err());
+        assert!(matches!(parse(&["beacon", "self-update", "--check"]).cmd, Some(Cmd::SelfUpdate { check: true })));
     }
 
     #[test]
