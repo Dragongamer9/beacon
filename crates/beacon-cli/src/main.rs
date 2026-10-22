@@ -11,6 +11,9 @@ use serde_json::{json, Value};
 use std::io::{BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
+/// Private build: downloads.
+mod private;
+
 #[derive(Parser)]
 #[command(name = "beacon", version, about = "Launcher for BFME, AotR, LOTR: Conquest and other classic games (Linux and Windows)")]
 struct Cli {
@@ -152,6 +155,25 @@ enum Cmd {
         game: String,
         #[command(subcommand)]
         action: CommunityAction,
+    },
+    /// Private build: download BFME, BFME II or RotWK from the BFME Foundation's CDN and set it up
+    /// (RotWK brings BFME II along when it's missing). Resumes where it stopped.
+    Get {
+        game: String,
+        /// Download it again over an existing copy, keeping files that are already fine.
+        #[arg(long)]
+        repair: bool,
+        /// Like --repair, but compare every file's MD5 (slow, thorough).
+        #[arg(long)]
+        verify: bool,
+        /// Use a source Beacon only guessed at after its link changed.
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Private build: the download sources (list, check, update, token, games-dir).
+    Sources {
+        #[command(subcommand)]
+        action: Option<private::SourcesAction>,
     },
 }
 
@@ -936,6 +958,8 @@ fn run(ctx: &Ctx, b: &mut Beacon, cmd: Cmd) -> Result<Value> {
                 }
             }
         }
+        Cmd::Get { game: g, repair, verify, yes } => private::get(ctx, b, &g, repair, verify, yes)?,
+        Cmd::Sources { action } => private::sources_cmd(ctx, b, action)?,
         Cmd::Paths => {
             if !ctx.json {
                 println!("config:   {}", b.paths.config_file.display());
@@ -1006,6 +1030,10 @@ mod tests {
         assert!(matches!(parse(&["beacon", "community-launcher", "uaw", "set", "/d/UaW Launcher.zip", "--json"]).cmd, Some(Cmd::CommunityLauncher { action: CommunityAction::Set { ref path }, .. }) if path == Path::new("/d/UaW Launcher.zip")));
         assert!(Cli::try_parse_from(["beacon", "community-launcher", "uaw"]).is_err());
         assert!(Cli::try_parse_from(["beacon", "community-launcher", "uaw", "set"]).is_err());
+        assert!(matches!(parse(&["beacon", "get", "rotwk", "--repair"]).cmd, Some(Cmd::Get { repair: true, verify: false, yes: false, .. })));
+        assert!(matches!(parse(&["beacon", "sources"]).cmd, Some(Cmd::Sources { action: None })));
+        assert!(matches!(parse(&["beacon", "sources", "check", "--json"]).cmd, Some(Cmd::Sources { action: Some(private::SourcesAction::Check) })));
+        assert!(Cli::try_parse_from(["beacon", "sources", "token", "ghp_x"]).is_err());
     }
 
     #[test]
@@ -1014,6 +1042,8 @@ mod tests {
         // The workshop only has BFME, BFME II and RotWK.
         assert_eq!(exit_code(&go(&mut t, &["workshop", "swgb"])), 2);
         assert_eq!(exit_code(&go(&mut t, &["workshop-install", "conquest", "x"])), 2);
+        // Private build: only the BFME games come from the CDN.
+        assert_eq!(exit_code(&go(&mut t, &["get", "swgb"])), 2);
         // Base games and EA's patches are refused without asking the server.
         let r = go(&mut t, &["workshop-install", "bfme1", "original-BFME1"]);
         assert_eq!(exit_code(&r), 1);
