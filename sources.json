@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "version": 3,
+  "version": 4,
   "workshop": {
     "api": "https://bfmeladder.com/api",
     "discover": [
@@ -43,6 +43,8 @@
       "folder": "167UET84ZWXrMd9zpxEYiQWTQZexCGZfT",
       "patterns": [
         "*.zip",
+        "*.7z",
+        "*.rar",
         "*.exe"
       ],
       "prefer": "launcher",

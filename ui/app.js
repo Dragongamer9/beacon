@@ -739,7 +739,7 @@ function communityLauncherRows(g) {
   return [
     ...launcherDownloadRows(g),
     rowHTML({ key: `cl-get:${g.id}`, label: `Get the ${g.short} launcher`, sub: CL_HOW_TO, value: "Open" }),
-    rowHTML({ key: `cl-set:${g.id}`, label: "Use a launcher you downloaded", sub: cl.path || "Its .exe, or the .zip it came in", value: cl.path ? "Change" : "Choose" }),
+    rowHTML({ key: `cl-set:${g.id}`, label: "Use a launcher you downloaded", sub: cl.path || "Its .exe, or the .zip, .7z or .rar it came in", value: cl.path ? "Change" : "Choose" }),
     ...(cl.path
       ? [
           rowHTML({
@@ -766,7 +766,7 @@ async function chooseCommunityLauncher(g) {
   const path = await api.call("pick_file", { kind: "launcher" });
   if (!path) return;
   clBusy = g.id;
-  showOverlay({ title: `Setting up the ${g.short} launcher…`, text: /\.zip$/i.test(path) ? "Extracting it into Beacon's tools folder." : "Copying it into Beacon's tools folder." });
+  showOverlay({ title: `Setting up the ${g.short} launcher…`, text: /\.(zip|7z|rar)$/i.test(path) ? "Extracting it into Beacon's tools folder." : "Copying it into Beacon's tools folder." });
   try {
     const [next, msg] = await api.call("community_launcher_set", { game: g.id, path });
     snap = next;
@@ -838,6 +838,7 @@ function renderLauncherSheet() {
     `<button class="nav row-btn" data-key="data"><svg viewBox="0 0 24 24"><use href="#i-folder"/></svg>Open Beacon's data folder (prefixes, mods, logs)</button>`,
     `<p class="section-label">About</p>`,
     `<div class="row" style="cursor:default"><span><span class="label">Beacon ${esc(snap.version)}</span><span class="sub">Not affiliated with EA or the Tolkien Estate. Bring your own copy of the games.</span></span></div>`,
+    appUpdateRow(),
   ].join("");
   const on = (key, ev, fn) => rows.querySelector(`[data-key="${key}"]`)?.addEventListener(ev, fn);
   on("scan", "click", scan);
@@ -850,6 +851,7 @@ function renderLauncherSheet() {
   on("data", "click", () => act(() => api.call("open_path", { path: snap.data_dir })));
   wireAio(on);
   wireDownloads(on, rows);
+  on("app-update", "click", appUpdate);
   snap.games.filter((x) => x.community_launcher).forEach((x) => wireCommunityLauncher(on, x));
   nav.refocus(keep ? `[data-key="${CSS.escape(keep)}"]` : null);
 }
@@ -1120,6 +1122,48 @@ async function launcherGet(g) {
   clBusy = null;
 }
 
+// Private build: Beacon updates itself from the private repo's releases.
+let appUpd = null; // last update check
+let appUpdBusy = false;
+
+function appUpdateRow() {
+  const c = appUpd;
+  const label = c?.newer ? `Update to Beacon ${c.latest.version}` : "Check for updates";
+  const sub = !c
+    ? "From your private releases (needs the GitHub token)"
+    : c.problem
+      ? c.problem
+      : c.newer
+        ? `This is ${c.current} · downloads, checks and restarts`
+        : `Up to date (newest release: ${c.latest?.version ?? c.current})`;
+  return rowHTML({ key: "app-update", label, sub, value: c?.newer ? "Update" : "Check" });
+}
+
+async function appUpdate() {
+  if (appUpdBusy) return;
+  if (!appUpd?.newer) {
+    try {
+      appUpd = await api.call("app_update_check");
+      render();
+      toast(appUpd.problem ? appUpd.problem : appUpd.newer ? `Beacon ${appUpd.latest.version} is available` : "Beacon is up to date", !!appUpd.problem);
+    } catch (e) {
+      toast(String(e?.message ?? e), true);
+    }
+    return;
+  }
+  appUpdBusy = true;
+  showOverlay({ title: `Updating to Beacon ${appUpd.latest.version}…`, text: "Downloading" });
+  try {
+    const r = await api.call("app_update_apply");
+    // Restart or quit: this window closes on its own. A manual install comes back here.
+    if (r?.next === "manual") showOverlay({ title: `Beacon ${appUpd.latest.version} downloaded`, text: `Install it with: ${r.how}`, ok: true });
+    else showOverlay({ title: "Restarting Beacon…", text: "" });
+  } catch (e) {
+    showOverlay({ title: "Couldn't update Beacon", text: String(e?.message ?? e), error: true, ok: true });
+  }
+  appUpdBusy = false;
+}
+
 function onSourcesChecked({ checks, updated }) {
   if (dlInfo) dlInfo = { ...dlInfo, checks, ...(updated ? { version: updated.to, built_in: false } : {}) };
   if (updated) toast(`Download sources list updated to version ${updated.to}`);
@@ -1210,6 +1254,15 @@ function tick() {
   api.on("community-launcher-progress", onCommunityLauncherProgress);
   api.on("cdn-progress", onCdnProgress);
   api.on("sources-checked", onSourcesChecked);
+  api.on("app-update", (c) => {
+    appUpd = c;
+    toast(`Beacon ${c.latest.version} is available — Launcher settings → Update`);
+    if (openSheet === "launcher") render();
+  });
+  api.on("app-update-progress", ({ pct, text }) => {
+    if (!appUpdBusy || $("#overlay").hidden) return;
+    $("#overlay-text").textContent = pct == null ? text : `${pct}% · ${text}`;
+  });
   dlInfo = await api.call("downloads_info").catch(() => null);
   api.on("community-launcher-closed", (e) => onCommunityLauncherClosed(e).catch(() => {}));
   tick();

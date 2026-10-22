@@ -561,7 +561,7 @@ async fn pick_file(app: AppHandle, kind: String) -> Option<String> {
         "mod" => d.add_filter("Mod (.big or launcher .exe)", &["big", "BIG", "exe", "EXE"]),
         "download" => d.add_filter("Download (archive, .exe or .dll)", &["zip", "ZIP", "7z", "rar", "RAR", "tar", "gz", "xz", "exe", "EXE", "dll", "DLL"]),
         "copy" => d.add_filter("Your copy (installer .exe or disc image .iso)", &["exe", "EXE", "msi", "MSI", "iso", "ISO"]),
-        "launcher" => d.add_filter("The launcher you downloaded (.exe or .zip)", &["exe", "EXE", "zip", "ZIP"]),
+        "launcher" => d.add_filter("The launcher you downloaded (.exe, .zip, .7z or .rar)", &["exe", "EXE", "zip", "ZIP", "7z", "7Z", "rar", "RAR"]),
         _ => d.add_filter("Windows program", &["exe", "EXE", "msi", "MSI"]),
     };
     d.blocking_pick_file().and_then(|p| p.into_path().ok()).map(|p| p.to_string_lossy().into_owned())
@@ -620,6 +620,8 @@ fn run_cli_if_asked() {
 fn main() {
     #[cfg(unix)]
     run_cli_if_asked();
+    // Private build: remove what a self-update left behind.
+    beacon_core::downloads::selfupdate::cleanup_old();
 
     let mut beacon = Beacon::load().expect("loading Beacon config");
     // First run: look for games straight away.
@@ -681,6 +683,8 @@ fn main() {
             private::set_github_token,
             private::set_games_dir,
             private::launcher_get,
+            private::app_update_check,
+            private::app_update_apply,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Beacon");

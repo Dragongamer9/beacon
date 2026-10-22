@@ -93,7 +93,8 @@ fn ext_is(p: &Path, ext: &str) -> bool {
     p.extension().map(|e| e.eq_ignore_ascii_case(ext)).unwrap_or(false)
 }
 
-/// Check a launcher the player picked: an absolute path to an existing `.exe` or `.zip` file.
+/// Check a launcher the player picked: an absolute path to an existing `.exe`, or the archive it came in
+/// (`.zip`, `.7z` or `.rar`; all three are extracted the same safe way).
 pub fn validate_source(p: &Path) -> Result<SourceKind> {
     if !p.is_absolute() {
         bail!("give the launcher's full path ({} isn't absolute)", p.display());
@@ -102,14 +103,14 @@ pub fn validate_source(p: &Path) -> Result<SourceKind> {
         bail!("{} not found", p.display());
     }
     if !p.is_file() {
-        bail!("{} isn't a file; pick the launcher's .exe or the .zip it came in", p.display());
+        bail!("{} isn't a file; pick the launcher's .exe or the archive it came in", p.display());
     }
     if ext_is(p, "exe") {
         Ok(SourceKind::Exe)
-    } else if ext_is(p, "zip") {
+    } else if ext_is(p, "zip") || ext_is(p, "7z") || ext_is(p, "rar") {
         Ok(SourceKind::Zip)
     } else {
-        bail!("pick the launcher's .exe or the .zip it came in")
+        bail!("pick the launcher's .exe or the archive it came in (.zip, .7z or .rar)")
     }
 }
 
@@ -483,7 +484,7 @@ mod tests {
         }
         assert_eq!(validate_source(&exe).unwrap(), SourceKind::Exe);
         assert_eq!(validate_source(&zip).unwrap(), SourceKind::Zip);
-        assert!(validate_source(&txt).unwrap_err().to_string().contains(".exe or the .zip"));
+        assert!(validate_source(&txt).unwrap_err().to_string().contains(".exe or the archive"));
         assert!(validate_source(Path::new("relative/launcher.exe")).unwrap_err().to_string().contains("isn't absolute"));
         assert!(validate_source(&t.path().join("gone.exe")).unwrap_err().to_string().contains("not found"));
         let dir = t.path().join("folder.exe");

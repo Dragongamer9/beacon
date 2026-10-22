@@ -22,6 +22,21 @@ Beacon's own downloads. Don't publish its builds.
     deleted afterwards to save space.
   - A launcher or installer: it's kept in Beacon's tools folder and run in RoL's prefix, and Beacon finds the game
     when it closes. "Run the RoL launcher again" stays on the game's page until the game is installed.
+- **.7z and .rar too.** Launchers and game archives can be .zip, .7z or .rar, both for downloads and for "Use a
+  launcher you downloaded". They're extracted with bsdtar, 7-Zip, or unrar/unar for RAR files that the others can't
+  open.
+- **Updates itself.** Launcher settings → About → **Check for updates** (also checked on start-up, or run
+  `beacon self-update`) looks at this repo's newest release with the same GitHub token. The download is checked
+  against the release's `SHA256SUMS` before anything is replaced, and the token is only ever sent to
+  api.github.com. How it installs depends on how Beacon was installed:
+  - AppImage: the file is replaced, and Beacon restarts.
+  - tar.gz, or any folder Beacon can write to: `beacon`/`beacon-app` are replaced, and Beacon restarts.
+  - .deb/.rpm: installed with `pkexec` (asks for your password). On Bazzite and other atomic systems, the package
+    is downloaded for `rpm-ostree install`.
+  - Windows installer or portable zip: the exes are swapped in place, and Beacon restarts.
+  - Windows MSI in Program Files: the new MSI runs with the UAC prompt.
+  - To ship an update, bump the version in `Cargo.toml` and `src-tauri/tauri.conf.json` and push to `main`. CI
+    builds the release.
 - **Links that fix themselves.** Nothing is a hard-coded download link. `sources.json` says how to *find* each file,
   and Beacon looks it up at download time:
   - `workshop`: the Foundation's API. If its server moves, Beacon reads the All-in-One launcher's source on GitHub for
@@ -60,6 +75,7 @@ beacon get bfme1 --yes           # accept a source Beacon only guessed after its
 beacon get uaw                   # newest UaW community launcher from its Drive folder, set up
 beacon get uaw --repair          # download it again even if it's the one in use
 beacon get rol                   # Rise of Legends from its Drive zip: the game, or its launcher to run
+beacon self-update [--check]     # update Beacon itself from this repo's newest release
 beacon sources                   # list version, sources, token, games folder
 beacon sources check             # look every source up now
 beacon sources update            # fetch sources.json from this repo now

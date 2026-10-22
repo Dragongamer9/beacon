@@ -168,7 +168,7 @@ impl Beacon {
             std::fs::remove_dir_all(&staging).with_context(|| format!("removing {}", staging.display()))?;
         }
         progress(Some(90), &format!("Extracting {}", file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
-        crate::media::extract_with(file, &staging, "no tool to extract it: install libarchive (bsdtar) or 7-Zip (7z); on Windows 10 or later tar.exe is built in")
+        crate::media::extract_with(file, &staging, "no tool to extract it: install libarchive (bsdtar) or 7-Zip (7z), or unrar for .rar files; on Windows 10 or later tar.exe is built in")
             .with_context(|| format!("extracting {}", file.display()))?;
         let result = (|| -> Result<Unpacked> {
             if let Some(exe) = find_game_exe(&staging, g) {

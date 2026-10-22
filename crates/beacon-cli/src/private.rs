@@ -3,7 +3,7 @@
 
 use super::{game, usage, Ctx};
 use anyhow::Result;
-use beacon_core::downloads::{archive, basegame, launcher, sources, Client};
+use beacon_core::downloads::{archive, basegame, launcher, selfupdate, sources, Client};
 use beacon_core::{report, Beacon};
 use clap::Subcommand;
 use serde_json::{json, Value};
@@ -255,4 +255,34 @@ fn get_archive(ctx: &Ctx, b: &mut Beacon, g: beacon_core::games::GameId, yes: bo
         )),
     }
     Ok(report::ok(Some(g), format!("{} downloaded", g.short()), json!({"download": report::value(&f), "unpacked": report::value(&u)})))
+}
+
+/// `beacon self-update [--check]`.
+pub fn self_update(ctx: &Ctx, b: &mut Beacon, check_only: bool) -> Result<Value> {
+    let net = Client::new();
+    let c = b.update_check(&net);
+    if let Some(p) = &c.problem {
+        ctx.say(format!("Couldn't check for updates: {p}"));
+        return Ok(json!({"ok": false, "kind": "failed", "error": p, "check": report::value(&c)}));
+    }
+    let latest = c.latest.as_ref().map(|r| r.version.clone()).unwrap_or_default();
+    if !c.newer {
+        ctx.say(format!("Beacon {} is the newest (latest release: {latest}).", c.current));
+        return Ok(report::ok(None, "Up to date", json!({"check": report::value(&c)})));
+    }
+    if check_only {
+        ctx.say(format!("Beacon {latest} is available (this is {}). `beacon self-update` installs it.", c.current));
+        return Ok(report::ok(None, "Update available", json!({"check": report::value(&c)})));
+    }
+    let mut progress = human_progress(ctx);
+    let applied = b.update_apply(&net, &mut progress)?;
+    if !ctx.json && std::io::stderr().is_terminal() {
+        eprintln!();
+    }
+    match &applied {
+        selfupdate::Applied::Restart { .. } => ctx.say(format!("Updated to Beacon {latest}. Restart the app to use it.")),
+        selfupdate::Applied::Quit => ctx.say("The installer is running; it finishes the update."),
+        selfupdate::Applied::Manual { how, .. } => ctx.say(format!("Downloaded Beacon {latest}. Install it with: {how}")),
+    }
+    Ok(report::ok(None, format!("Beacon {latest}"), json!({"applied": report::value(&applied)})))
 }

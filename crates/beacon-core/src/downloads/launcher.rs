@@ -40,8 +40,8 @@ pub enum Outcome {
 /// A safe single-file name for the download, keeping its extension.
 fn file_name_for(name: &str) -> Result<String> {
     let ext = Path::new(name).extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
-    if ext != "zip" && ext != "exe" {
-        bail!("the newest launcher is {name}, a .{ext} file; Beacon handles .zip and .exe (extract it yourself and pick its .exe)");
+    if !matches!(ext.as_str(), "zip" | "7z" | "rar" | "exe") {
+        bail!("the newest launcher is {name}, a .{ext} file; Beacon handles .exe, .zip, .7z and .rar (extract it yourself and pick its .exe)");
     }
     let clean: String = name.chars().map(|c| if c.is_alphanumeric() || " -_.()+,".contains(c) { c } else { '_' }).take(100).collect();
     let clean = clean.trim().trim_start_matches('.').to_string();
@@ -161,7 +161,9 @@ mod tests {
 
     #[test]
     fn other_archives_are_refused() {
-        assert!(file_name_for("UaW Launcher.rar").is_err());
+        assert!(file_name_for("UaW Launcher.tar.xz").is_err());
+        assert_eq!(file_name_for("UaW Launcher.rar").unwrap(), "UaW Launcher.rar");
+        assert_eq!(file_name_for("UaW Launcher 2.7Z").unwrap(), "UaW Launcher 2.7Z");
         assert_eq!(file_name_for("UaW Launcher 1.3.zip").unwrap(), "UaW Launcher 1.3.zip");
         assert_eq!(file_name_for("../../x.exe").unwrap(), "_.._x.exe");
     }

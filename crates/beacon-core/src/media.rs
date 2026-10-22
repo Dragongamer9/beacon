@@ -129,6 +129,11 @@ pub fn extract_commands(image: &Path, dest: &Path) -> Vec<(PathBuf, Vec<String>)
         out.push(bsdtar("bsdtar".into()));
         out.push(sevenzip("7z".into()));
         out.push(sevenzip("7zz".into()));
+        // RAR archives: unrar or unar when bsdtar and 7-Zip can't (newer RAR5 files, p7zip without its RAR plugin).
+        if image.extension().map(|e| e.eq_ignore_ascii_case("rar")).unwrap_or(false) {
+            out.push(("unrar".into(), vec!["x".into(), "-o+".into(), "-y".into(), i.clone(), format!("{d}/")]));
+            out.push(("unar".into(), vec!["-q".into(), "-f".into(), "-D".into(), "-o".into(), d.clone(), i.clone()]));
+        }
     }
     out
 }

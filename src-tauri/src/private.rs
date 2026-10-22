@@ -4,7 +4,7 @@
 //! start-up check of the sources as `sources-checked`.
 
 use crate::{err, snapshot, AppState, CmdResult};
-use beacon_core::downloads::{archive, basegame, launcher, sources, Client};
+use beacon_core::downloads::{archive, basegame, launcher, selfupdate, sources, Client};
 use beacon_core::games::GameId;
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -162,6 +162,12 @@ pub fn start_background_check(app: &AppHandle) {
         let updated = store.update(&Client::new(), false).ok().filter(|u| u.to > u.from);
         let checks = run_check(&store);
         let _ = app.emit("sources-checked", json!({"checks": checks, "updated": updated}));
+        // A newer private release of Beacon itself?
+        let b = app.state::<AppState>().beacon.lock().unwrap().clone();
+        let c = b.update_check(&Client::new());
+        if c.newer {
+            let _ = app.emit("app-update", &c);
+        }
     });
 }
 
@@ -272,4 +278,46 @@ async fn archive_get(app: AppHandle, game: GameId, accept_guess: bool) -> CmdRes
         _ => None,
     };
     Ok(json!({"result": "done", "snapshot": snapshot(&state), "message": message, "launcher": launcher}))
+}
+
+/// Is there a newer private release of Beacon?
+#[tauri::command]
+pub async fn app_update_check(app: AppHandle) -> CmdResult<selfupdate::Check> {
+    let b = app.state::<AppState>().beacon.lock().unwrap().clone();
+    tauri::async_runtime::spawn_blocking(move || b.update_check(&Client::new())).await.map_err(err)
+}
+
+#[derive(Clone, Serialize)]
+struct AppUpdateProgress {
+    pct: Option<u8>,
+    text: String,
+}
+
+/// Download, check and install the newest private release, then restart into it (or quit for the MSI).
+/// Answers `{next: "manual", file, how}` when the package has to be installed by hand.
+#[tauri::command]
+pub async fn app_update_apply(app: AppHandle) -> CmdResult<Value> {
+    let b = app.state::<AppState>().beacon.lock().unwrap().clone();
+    let app2 = app.clone();
+    let applied = tauri::async_runtime::spawn_blocking(move || {
+        b.update_apply(&Client::new(), &mut |pct: Option<u8>, text: &str| {
+            let _ = app2.emit("app-update-progress", AppUpdateProgress { pct, text: text.to_string() });
+        })
+    })
+    .await
+    .map_err(err)?
+    .map_err(|e| format!("{e:#}"))?;
+    match &applied {
+        selfupdate::Applied::Restart { program } => {
+            let mut c = std::process::Command::new(program);
+            c.args(std::env::args_os().skip(1));
+            // The new copy must not inherit the old AppImage's mount.
+            c.env_remove("APPDIR").env_remove("APPIMAGE").env_remove("ARGV0").env_remove("OWD");
+            c.spawn().map_err(|e| format!("Updated, but couldn't restart Beacon ({e}); start it again yourself"))?;
+            app.exit(0);
+        }
+        selfupdate::Applied::Quit => app.exit(0),
+        selfupdate::Applied::Manual { .. } => {}
+    }
+    Ok(serde_json::to_value(&applied).map_err(err)?)
 }

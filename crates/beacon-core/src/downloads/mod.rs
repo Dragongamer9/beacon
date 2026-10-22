@@ -15,6 +15,7 @@ pub mod archive;
 pub mod basegame;
 pub mod drive;
 pub mod launcher;
+pub mod selfupdate;
 pub mod sources;
 pub mod text;
 
@@ -45,6 +46,12 @@ pub trait Transfer: Send + Sync {
     /// GET `url` from byte `offset` on (a `Range` request when `offset > 0`),
     /// with extra request headers.
     fn open(&self, url: &str, offset: u64, headers: &[(&str, String)]) -> Result<(Opened, Box<dyn Read + Send>)>;
+
+    /// Where `url` redirects to, without following it (so headers like a GitHub token
+    /// never reach the other host). `None` when it doesn't redirect.
+    fn redirect_target(&self, _url: &str, _headers: &[(&str, String)]) -> Result<Option<String>> {
+        Ok(None)
+    }
 
     /// GET a text answer, at most `max` bytes.
     fn get_text(&self, url: &str, headers: &[(&str, String)], max: u64) -> Result<String> {
@@ -79,6 +86,8 @@ pub fn is_https(url: &str) -> bool {
 /// The real network: ureq over rustls, https only (redirects too), timeouts.
 pub struct Client {
     agent: ureq::Agent,
+    /// The same, without following redirects.
+    no_redirects: ureq::Agent,
 }
 
 impl Client {
@@ -92,7 +101,15 @@ impl Client {
             .try_proxy_from_env(true)
             .user_agent(concat!("beacon/", env!("CARGO_PKG_VERSION")))
             .build();
-        Client { agent }
+        let no_redirects = ureq::AgentBuilder::new()
+            .timeout_connect(Duration::from_secs(20))
+            .timeout_read(Duration::from_secs(60))
+            .https_only(true)
+            .redirects(0)
+            .try_proxy_from_env(true)
+            .user_agent(concat!("beacon/", env!("CARGO_PKG_VERSION")))
+            .build();
+        Client { agent, no_redirects }
     }
 }
 
@@ -103,6 +120,27 @@ impl Default for Client {
 }
 
 impl Transfer for Client {
+    fn redirect_target(&self, url: &str, headers: &[(&str, String)]) -> Result<Option<String>> {
+        if !is_https(url) {
+            bail!("not an https link: {url}");
+        }
+        let mut req = self.no_redirects.get(url);
+        for (k, v) in headers {
+            req = req.set(k, v);
+        }
+        let resp = match req.call() {
+            Ok(r) => r,
+            Err(ureq::Error::Status(code, _)) => bail!("{} answered HTTP {code}", host(url)),
+            Err(ureq::Error::Transport(t)) => bail!("couldn't reach {}: {t}", host(url)),
+        };
+        if (300..400).contains(&resp.status()) {
+            let to = resp.header("Location").map(str::to_string).ok_or_else(|| anyhow!("{} redirected nowhere", host(url)))?;
+            let to = text::join(url, &to).ok_or_else(|| anyhow!("{} redirected to a link that isn't https", host(url)))?;
+            return Ok(Some(to));
+        }
+        Ok(None)
+    }
+
     fn open(&self, url: &str, offset: u64, headers: &[(&str, String)]) -> Result<(Opened, Box<dyn Read + Send>)> {
         if !is_https(url) {
             bail!("not an https link: {url}");
@@ -317,6 +355,8 @@ pub(crate) mod testnet {
         pub no_ranges: bool,
         /// Fail after this many bytes of the next answer (a dropped connection).
         pub cut_after: Mutex<Option<usize>>,
+        /// URL → where it redirects (for `redirect_target`).
+        pub redirects: Mutex<HashMap<String, String>>,
     }
 
     impl FakeNet {
@@ -356,6 +396,11 @@ pub(crate) mod testnet {
     }
 
     impl Transfer for FakeNet {
+        fn redirect_target(&self, url: &str, _headers: &[(&str, String)]) -> Result<Option<String>> {
+            self.log.lock().unwrap().push((url.to_string(), 0));
+            Ok(self.redirects.lock().unwrap().get(url).cloned())
+        }
+
         fn open(&self, url: &str, offset: u64, _headers: &[(&str, String)]) -> Result<(Opened, Box<dyn Read + Send>)> {
             self.log.lock().unwrap().push((url.to_string(), offset));
             let body = self.files.lock().unwrap().get(url).cloned().ok_or_else(|| anyhow!("{} answered HTTP 404", host(url)))?;
