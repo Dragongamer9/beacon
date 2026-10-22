@@ -26,6 +26,11 @@ pub fn downloads_info(state: State<AppState>) -> Value {
     let store = b.download_store();
     let list = store.list();
     let s = store.settings();
+    let games: Vec<String> = ["bfme1", "bfme2", "rotwk"]
+        .into_iter()
+        .map(String::from)
+        .chain(list.sources.iter().filter_map(|s| s.archive_for).map(|g| g.slug().to_string()))
+        .collect();
     let checks: Option<Vec<sources::Check>> = std::fs::read_to_string(store.status_file()).ok().and_then(|t| serde_json::from_str(&t).ok());
     json!({
         "version": list.version,
@@ -36,7 +41,7 @@ pub fn downloads_info(state: State<AppState>) -> Value {
         "custom_games_dir": s.games_dir.is_some(),
         "learned_api": store.learned().workshop_api,
         "checks": checks,
-        "games": ["bfme1", "bfme2", "rotwk"].into_iter().map(String::from).chain(list.sources.iter().filter_map(|s| s.archive_for).map(|g| g.slug().to_string())).collect::<Vec<_>>(),
+        "games": games,
         "archive_launchers": b.archive_launchers().exes,
         "launchers": list.sources.iter().filter_map(|s| s.launcher_for).collect::<Vec<GameId>>(),
     })
