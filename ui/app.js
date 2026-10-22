@@ -303,8 +303,10 @@ function renderModsSheet() {
 let catalogCache = {};
 async function openCatalog() {
   catalogCache[game().id] = await api.call("get_catalog", { game: game().id });
+  modDownloads[game().id] = await api.call("mod_downloads", { game: game().id }).catch(() => []);
   open("catalog", $("#sheet-catalog"));
 }
+const modDownloads = {}; // game id → [{id, title, catalog_id}] (private build)
 
 function renderCatalogSheet() {
   const g = game();
@@ -321,7 +323,7 @@ function renderCatalogSheet() {
               label: it.name,
               sub: it.blurb,
               badge: it.installed ? "Installed" : it.kind === "patch" ? "Patch" : "",
-              value: it.installed ? (g.selected_mod === it.installed ? "" : "Use") : "Get",
+              value: it.installed ? (g.selected_mod === it.installed ? "" : "Use") : dlFor(g, it) ? "Download" : "Get",
               tick: g.selected_mod === it.installed && !!it.installed,
               selected: !!it.installed,
             })
@@ -329,14 +331,26 @@ function renderCatalogSheet() {
           .join("")
       : "";
   const rows = $("#catalog-rows");
+  const extras = (modDownloads[g.id] || []).filter((d) => !d.catalog_id);
   rows.innerHTML =
     section("Standalone game", items.filter((i) => i.kind === "game")) +
     section("Mods", items.filter((i) => i.kind === "mod")) +
     section("Community patches", items.filter((i) => i.kind === "patch")) +
-    `<p class="section-label" style="text-transform:none;letter-spacing:0;font-weight:400">“Get” opens the mod's page. Once it's downloaded, add it from Mods — or run its installer from Game settings.</p>`;
+    (extras.length ? `<p class="section-label">More downloads</p>` + extras.map((d) => rowHTML({ key: `dl:${d.id}`, label: d.title, sub: "Downloaded and set up inside Beacon", value: "Download" })).join("") : "") +
+    `<p class="section-label">Download from a link</p>` +
+    fieldHTML({ key: "moddb-link", label: "ModDB link", placeholder: "https://www.moddb.com/mods/…", help: "Paste a mod's ModDB page or one of its downloads. Beacon downloads it and puts it in the right place for this game." }) +
+    `<p class="section-label" style="text-transform:none;letter-spacing:0;font-weight:400">“Download” gets the mod inside Beacon and sets it up for ${esc(g.short)}. “Get” opens the mod's page.</p>`;
+  const linkField = rows.querySelector("#f-moddb-link");
+  linkField?.addEventListener("change", () => {
+    const link = linkField.value.trim();
+    linkField.value = "";
+    if (link) modGet(g, { link });
+  });
   rows.querySelectorAll(".row").forEach((r) =>
     r.addEventListener("click", async () => {
+      if (r.dataset.key.startsWith("dl:")) return modGet(g, { id: r.dataset.key.slice(3) });
       const it = items.find((i) => i.id === r.dataset.key);
+      if (!it.installed && dlFor(g, it)) return modGet(g, { id: dlFor(g, it).id });
       if (it.installed) {
         if (await act(() => api.call("select_mod", { game: g.id, id: it.installed }))) {
           closeAllSheets();
@@ -930,6 +944,9 @@ function showOverlay({ title, text, error = false, ok = false }) {
 function hideOverlay() {
   if ($("#overlay").hidden) return;
   overlayState = null;
+  // A mod download that wasn't confirmed is dropped (private build).
+  modPending = null;
+  $("#overlay-ok").textContent = "OK";
   nav.popLayer();
 }
 
@@ -1203,6 +1220,54 @@ async function appUpdate() {
   appUpdBusy = false;
 }
 
+// Private build: mods downloaded inside Beacon. Look the file up, say what it is, then download and
+// install it where it belongs for the game (its mods, its folder, or its setup run in its prefix).
+const dlFor = (g, it) => (modDownloads[g.id] || []).find((d) => d.catalog_id === it.id);
+let modBusy = false;
+let modPending = null; // a lookup waiting for "Download"
+
+async function modGet(g, what) {
+  if (modBusy) return;
+  modBusy = true;
+  showOverlay({ title: "Looking it up…", text: "Following the download to its file" });
+  try {
+    const found = await api.call("mod_lookup", { game: g.id, id: what.id ?? null, link: what.link ?? null });
+    const size = found.size ? ` · ${fmtSize(found.size)}` : "";
+    modPending = found;
+    showOverlay({ title: `Download ${found.name}?`, text: `${found.file}${size}${found.note ? ` · ${found.note}` : ""}`, ok: true });
+    $("#overlay-ok").textContent = "Download";
+  } catch (e) {
+    showOverlay({ title: "Couldn't find the download", text: String(e?.message ?? e), error: true, ok: true });
+  }
+  modBusy = false;
+}
+
+async function modInstall() {
+  const found = modPending;
+  modPending = null;
+  $("#overlay-ok").textContent = "OK";
+  if (!found) return;
+  const g = snap.games.find((x) => x.id === found.game);
+  modBusy = true;
+  showOverlay({ title: `Downloading ${found.name}…`, text: found.file });
+  try {
+    const r = await api.call("mod_install", { found });
+    snap = r.snapshot;
+    await loadMods(found.game, true).catch(() => {});
+    if (openSheet === "catalog") catalogCache[found.game] = await api.call("get_catalog", { game: found.game }).catch(() => catalogCache[found.game]);
+    hideOverlay();
+    render();
+    toast(r.message);
+    if (r.installed.kind === "installer") {
+      modBusy = false;
+      return runInstaller(g, r.installed.exe);
+    }
+  } catch (e) {
+    showOverlay({ title: `Couldn't install ${found.name}`, text: `${String(e?.message ?? e)} — run it again to pick up where it stopped.`, error: true, ok: true });
+  }
+  modBusy = false;
+}
+
 function onSourcesChecked({ checks, updated }) {
   if (dlInfo) dlInfo = { ...dlInfo, checks, ...(updated ? { version: updated.to, built_in: false } : {}) };
   if (updated) toast(`Download sources list updated to version ${updated.to}`);
@@ -1259,7 +1324,7 @@ $("#btn-find-mods").addEventListener("click", findMods);
 $("#btn-catalog-add").addEventListener("click", () => addMod("file"));
 $("#btn-catalog-find").addEventListener("click", findMods);
 $("#btn-open-mods").addEventListener("click", () => act(() => api.call("open_path", { path: `${snap.mods_dir}/${game().id}` })));
-$("#overlay-ok").addEventListener("click", hideOverlay);
+$("#overlay-ok").addEventListener("click", () => (modPending ? modInstall() : hideOverlay()));
 // Coming back to Beacon while the All-in-One launcher is open: pick up games it finished downloading.
 window.addEventListener("focus", () => {
   if (!snap || !aioOpenedAt || Date.now() - (refreshAfterAio.last || 0) < 15000) return;
@@ -1292,6 +1357,10 @@ function tick() {
   api.on("aio-launcher-closed", () => refreshAfterAio(true).catch(() => {}));
   api.on("community-launcher-progress", onCommunityLauncherProgress);
   api.on("cdn-progress", onCdnProgress);
+  api.on("mod-progress", ({ pct, text }) => {
+    if (!modBusy || $("#overlay").hidden) return;
+    $("#overlay-text").textContent = pct == null ? text : `${pct}% · ${text}`;
+  });
   api.on("sources-checked", onSourcesChecked);
   api.on("app-update", (c) => {
     appUpd = c;

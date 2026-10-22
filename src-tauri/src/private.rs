@@ -4,7 +4,7 @@
 //! start-up check of the sources as `sources-checked`.
 
 use crate::{err, snapshot, AppState, CmdResult};
-use beacon_core::downloads::{archive, basegame, launcher, selfupdate, sources, Client};
+use beacon_core::downloads::{archive, basegame, launcher, modget, selfupdate, sources, Client};
 use beacon_core::games::GameId;
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -318,4 +318,69 @@ pub async fn app_update_apply(app: AppHandle) -> CmdResult<Value> {
         selfupdate::Applied::Manual { .. } => {}
     }
     Ok(serde_json::to_value(&applied).map_err(err)?)
+}
+
+/// Mod downloads for a game's catalog: `{id, title, catalog_id}`.
+#[tauri::command]
+pub fn mod_downloads(state: State<AppState>, game: GameId) -> Vec<Value> {
+    state.beacon.lock().unwrap().mod_sources(game).into_iter().map(|s| json!({"id": s.id, "title": s.title, "catalog_id": s.catalog_id})).collect()
+}
+
+/// What a mod source (`id`) or a ModDB link (`link`) leads to now; nothing is downloaded.
+#[tauri::command]
+pub async fn mod_lookup(app: AppHandle, game: GameId, id: Option<String>, link: Option<String>) -> CmdResult<modget::Found> {
+    let b = app.state::<AppState>().beacon.lock().unwrap().clone();
+    let r = match (id, link) {
+        (Some(id), _) => modget::ModRef::Source(id),
+        (None, Some(l)) => modget::ModRef::Link(l.trim().to_string()),
+        _ => return Err("nothing to look up".into()),
+    };
+    tauri::async_runtime::spawn_blocking(move || b.mod_lookup(&Client::new(), game, &r)).await.map_err(err)?.map_err(|e| format!("{e:#}"))
+}
+
+#[derive(Clone, Serialize)]
+struct ModProgress {
+    game: GameId,
+    pct: Option<u8>,
+    text: String,
+}
+
+/// Download and install what `mod_lookup` found. A library mod is selected for the game; an
+/// installer comes back as `{kind: "installer", exe}` for the UI to run in the game's prefix.
+#[tauri::command]
+pub async fn mod_install(app: AppHandle, found: modget::Found) -> CmdResult<Value> {
+    let b = app.state::<AppState>().beacon.lock().unwrap().clone();
+    let app2 = app.clone();
+    let game = found.game;
+    let f2 = found.clone();
+    let done = tauri::async_runtime::spawn_blocking(move || {
+        let mut last = std::time::Instant::now() - Duration::from_secs(1);
+        let mut last_pct = None;
+        b.mod_install(&Client::new(), &f2, &mut |pct: Option<u8>, text: &str| {
+            if pct != last_pct || last.elapsed() >= Duration::from_millis(120) {
+                last = std::time::Instant::now();
+                last_pct = pct;
+                let _ = app2.emit("mod-progress", ModProgress { game, pct, text: text.to_string() });
+            }
+        })
+    })
+    .await
+    .map_err(err)?
+    .map_err(|e| format!("{e:#}"))?;
+    let state = app.state::<AppState>();
+    let message = {
+        let mut b = state.beacon.lock().unwrap();
+        match &done {
+            modget::Installed::Library { mod_id, .. } => {
+                if let Some(id) = mod_id {
+                    let _ = b.select_mod(game, Some(id));
+                    let _ = b.save();
+                }
+                format!("{} installed and selected", found.name)
+            }
+            modget::Installed::GameFolder { files, .. } => format!("{} copied into {}'s folder ({files} files; replaced ones are backed up)", found.name, game.short()),
+            modget::Installed::Installer { .. } => format!("{} downloaded — starting its setup in {}'s prefix", found.name, game.short()),
+        }
+    };
+    Ok(json!({"installed": done, "snapshot": snapshot(&state), "message": message}))
 }

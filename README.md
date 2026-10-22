@@ -268,9 +268,9 @@ The **Mod catalog** lists the major mods and community patches for all three gam
   - Exigo: integrated graphics fix, ModDB downloads.
   - RoL: Rise of Legends Heaven.
   - SWGB: Steam store page, crash and stuck-key fix.
-- **RotWK:** Edain, Age of the Ring 8.x (the older mod version), The Dwarf Holds, Elven Alliance, Patch 2.02.
+- **RotWK:** Edain, Age of the Ring 8.x (the older mod version), Elven Alliance, Patch 2.02.
 - **BFME II:** Patch 2.22, Divide and Conquer, Helm's Deep: Last Hope.
-- **BFME:** Patch 1.08, Middle-earth Extended Edition, Return of Shadow, Shadow and Flame, King of the West, Legends of the 3rd Age.
+- **BFME:** Patch 1.08, Middle-earth Extended Edition, Return of Shadow, The Dwarf Holds, Shadow and Flame, King of the West, Legends of the 3rd Age.
 
 In the catalog:
 

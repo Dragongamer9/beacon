@@ -171,6 +171,16 @@ enum Cmd {
         #[arg(long)]
         yes: bool,
     },
+    /// Private build: download a mod or patch inside Beacon (a catalog id with a Download, or any ModDB link) and
+    /// put it where it belongs for the game: Beacon's mods, the game's folder, or its installer run in the prefix.
+    ModGet {
+        game: String,
+        /// A catalog id (e.g. edain) or a ModDB link.
+        what: String,
+        /// Download without showing what was found first.
+        #[arg(long)]
+        yes: bool,
+    },
     /// Private build: update Beacon itself from the private repo's newest release.
     SelfUpdate {
         /// Only say whether there's a newer version.
@@ -968,6 +978,7 @@ fn run(ctx: &Ctx, b: &mut Beacon, cmd: Cmd) -> Result<Value> {
         Cmd::Get { game: g, repair, verify, yes } => private::get(ctx, b, &g, repair, verify, yes)?,
         Cmd::Sources { action } => private::sources_cmd(ctx, b, action)?,
         Cmd::SelfUpdate { check } => private::self_update(ctx, b, check)?,
+        Cmd::ModGet { game: g, what, yes } => private::mod_get(ctx, b, &g, &what, yes)?,
         Cmd::Paths => {
             if !ctx.json {
                 println!("config:   {}", b.paths.config_file.display());
@@ -1044,6 +1055,7 @@ mod tests {
         assert!(Cli::try_parse_from(["beacon", "sources", "token"]).is_err());
         assert!(matches!(parse(&["beacon", "sources", "repo", "Dragongamer9/beacon"]).cmd, Some(Cmd::Sources { action: Some(private::SourcesAction::Repo { .. }) })));
         assert!(matches!(parse(&["beacon", "self-update", "--check"]).cmd, Some(Cmd::SelfUpdate { check: true })));
+        assert!(matches!(parse(&["beacon", "mod-get", "rotwk", "edain", "--yes"]).cmd, Some(Cmd::ModGet { yes: true, .. })));
     }
 
     #[test]

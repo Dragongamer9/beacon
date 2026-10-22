@@ -147,7 +147,7 @@ function mockApi() {
     },
     get_catalog: ({ game: g }) => {
       const cat = {
-        rotwk: [["edain","Edain Mod","mod","Large lore-focused overhaul with its own launcher and submods.","rotwk:edain"],["aotr","Age of the Ring","mod","Major overhaul with new factions, heroes and a reworked campaign.","rotwk:age-of-the-ring"],["dwarf-holds","The Dwarf Holds","mod","Adds the Dwarven kingdoms as separate playable factions.",null],["elven-alliance","Elven Alliance","mod","Expands the Elven factions with new units and structures.",null],["rotwk-202","RotWK Patch 2.02","patch","Community balance patch many RotWK mods expect.",null]],
+        rotwk: [["edain","Edain Mod","mod","Large lore-focused overhaul with its own launcher and submods.","rotwk:edain"],["aotr","Age of the Ring","mod","Major overhaul with new factions, heroes and a reworked campaign.","rotwk:age-of-the-ring"],["elven-alliance","Elven Alliance","mod","Expands the Elven factions with new units and structures.",null],["rotwk-202","RotWK Patch 2.02","patch","Community balance patch many RotWK mods expect.",null]],
         bfme2: [["patch-222","BFME Patch 2.22 / All-in-One","patch","Community patch for BFME II.",null],["divide-conquer","Divide and Conquer","mod","Splits the base factions into more distinct sub-factions.",null]],
         conquest: [["mordorwide","MordorWide (online multiplayer)","patch","Community re-implementation of EA's old Conquest servers. Needs patch 1.1 and a patched exe.",null],["conquest-fixes","Conquest Fixes","mod","Bug fixes and restored cut levels, without changing balance.",null]],
         uaw: [["uaw-xliveless","xliveless (removes Games for Windows Live)","patch","Put xliveless's xlive.dll in the game folder.",null]],
@@ -256,6 +256,14 @@ function mockApi() {
         await delay(400);
       }
       return { next: "restart", program: "/home/you/Beacon.AppImage" };
+    },
+    mod_downloads: ({ game: g }) => (g === "rotwk" ? [{ id: "mod-edain", title: "Edain Mod", catalog_id: "edain" }, { id: "mod-edain-launcher", title: "Edain Mod Launcher", catalog_id: null }] : []),
+    mod_lookup: async ({ game: g, id, link }) => { await delay(500); return { game: g, name: id === "mod-edain-launcher" ? "Edain Mod Launcher" : link ? "Some Mod" : "Edain Mod", file: "Edain4.8.zip", size: 2861726686, url: "https://www.moddb.com/downloads/mirror/1/2/3", md5: null, install: "library", catalog_id: "edain", note: null }; },
+    mod_install: async ({ found }) => {
+      for (const pct of [10, 45, 80, 90, 96]) { emit("mod-progress", { game: found.game, pct, text: pct >= 90 ? "Extracting Edain4.8.zip" : "Downloading Edain4.8.zip" }); await delay(300); }
+      const m = { id: `${found.game}:edain-mod`, name: found.name, game: found.game, kind: "mod", path: `/home/you/.local/share/beacon/mods/${found.game}/${found.name}`, args: [], in_library: true };
+      mods[found.game].push(m); game(found.game).selected_mod = m.id;
+      return { installed: { kind: "library", game: found.game, dir: m.path, mod_id: m.id }, snapshot: snap(), message: `${found.name} installed and selected` };
     },
     sources_update: async () => { await delay(600); return { from: dl.version, to: ++dl.version, skipped: null }; },
     set_updates_repo: ({ repo }) => { if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) throw `"${repo}" isn't a GitHub repo (owner/repo)`; dl.sources_repo = repo; return repo; },
