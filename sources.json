@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "version": 4,
+  "version": 5,
   "workshop": {
     "api": "https://bfmeladder.com/api",
     "discover": [
@@ -58,6 +58,74 @@
       "kind": "drive-file",
       "file": "1P7a2FcJaQnyNMtI9Tfa9OTXvVkfB9nrx",
       "name": "Rise Of Legends Game Files.zip"
+    },
+    {
+      "id": "mod-edain",
+      "title": "Edain Mod",
+      "mod_for": "rotwk",
+      "catalog_id": "edain",
+      "kind": "moddb",
+      "url": "https://www.moddb.com/mods/edain-mod/downloads",
+      "file": "edain-4*",
+      "exclude": [
+        "*launcher*",
+        "*submod*",
+        "*demo*"
+      ],
+      "install": "library"
+    },
+    {
+      "id": "mod-edain-launcher",
+      "title": "Edain Mod Launcher",
+      "mod_for": "rotwk",
+      "kind": "moddb",
+      "url": "https://www.moddb.com/mods/edain-mod/downloads",
+      "file": "edain-mod-launcher*",
+      "install": "library"
+    },
+    {
+      "id": "mod-dwarf-holds",
+      "title": "The Dwarf Holds",
+      "mod_for": "bfme1",
+      "catalog_id": "dwarf-holds",
+      "kind": "moddb",
+      "url": "https://www.moddb.com/mods/the-dwarf-holds/downloads",
+      "file": "the-dwarf-holds-widescreen*"
+    },
+    {
+      "id": "mod-return-of-shadow",
+      "title": "Return of Shadow: Southron Edition",
+      "mod_for": "bfme1",
+      "catalog_id": "return-of-shadow",
+      "kind": "moddb",
+      "url": "https://www.moddb.com/mods/return-of-shadow/downloads",
+      "file": "southron-edition"
+    },
+    {
+      "id": "mod-return-of-shadow-patch",
+      "title": "Return of Shadow: Southron Edition patch",
+      "mod_for": "bfme1",
+      "kind": "moddb",
+      "url": "https://www.moddb.com/mods/return-of-shadow/downloads",
+      "file": "southron-edition-1*"
+    },
+    {
+      "id": "mod-conquest-fixes",
+      "title": "Conquest Fixes",
+      "mod_for": "conquest",
+      "catalog_id": "conquest-fixes",
+      "kind": "moddb",
+      "url": "https://www.moddb.com/games/lotr-conquest/downloads/conquest-fixes",
+      "install": "game-folder"
+    },
+    {
+      "id": "mod-exigo-intel-fix",
+      "title": "Integrated graphics fix",
+      "mod_for": "exigo",
+      "catalog_id": "exigo-intel-fix",
+      "kind": "moddb",
+      "url": "https://www.moddb.com/downloads/armies-of-exigo-fix-win-en-exe-file-for-intel",
+      "install": "game-folder"
     }
   ]
 }

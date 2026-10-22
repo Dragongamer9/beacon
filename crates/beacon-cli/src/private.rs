@@ -3,7 +3,7 @@
 
 use super::{game, usage, Ctx};
 use anyhow::Result;
-use beacon_core::downloads::{archive, basegame, launcher, selfupdate, sources, Client};
+use beacon_core::downloads::{archive, basegame, launcher, modget, selfupdate, sources, Client};
 use beacon_core::{report, Beacon};
 use clap::Subcommand;
 use serde_json::{json, Value};
@@ -267,4 +267,35 @@ pub fn self_update(ctx: &Ctx, b: &mut Beacon, check_only: bool) -> Result<Value>
         selfupdate::Applied::Manual { how, .. } => ctx.say(format!("Downloaded Beacon {latest}. Install it with: {how}")),
     }
     Ok(report::ok(None, format!("Beacon {latest}"), json!({"applied": report::value(&applied)})))
+}
+
+/// `beacon mod-get <game> <catalog id | ModDB link> [--yes]`.
+pub fn mod_get(ctx: &Ctx, b: &mut Beacon, g: &str, what: &str, yes: bool) -> Result<Value> {
+    let g = game(g)?;
+    let r = if what.starts_with("https://") { modget::ModRef::Link(what.to_string()) } else { modget::ModRef::Source(what.to_string()) };
+    let net = Client::new();
+    let f = b.mod_lookup(&net, g, &r)?;
+    let size = f.size.map(|s| format!("{:.2} GB", s as f64 / 1e9)).unwrap_or_else(|| "size unknown".into());
+    if !yes {
+        ctx.say(format!("Found {} for {}: {} ({size}){}.", f.name, g.short(), f.file, f.note.as_deref().map(|n| format!(", {n}")).unwrap_or_default()));
+        ctx.say(format!("Run `beacon mod-get {} {what} --yes` to download and install it.", g.slug()));
+        return Ok(json!({"ok": true, "found": report::value(&f), "installed": null}));
+    }
+    let mut progress = human_progress(ctx);
+    let done = b.mod_install(&net, &f, &mut progress)?;
+    if !ctx.json && std::io::stderr().is_terminal() {
+        eprintln!();
+    }
+    match &done {
+        modget::Installed::Library { dir, mod_id, .. } => {
+            if let Some(id) = mod_id {
+                b.select_mod(g, Some(id))?;
+                b.save()?;
+            }
+            ctx.say(format!("{} is in Beacon's mods ({}) and selected for {}.", f.name, dir.display(), g.short()));
+        }
+        modget::Installed::GameFolder { dir, files, backup, .. } => ctx.say(format!("Copied {files} files into {} (replaced files are in {}).", dir.display(), backup.display())),
+        modget::Installed::Installer { exe, .. } => ctx.say(format!("{} is a setup program: run it in {}'s prefix with `beacon run {} \"{}\"`.", f.name, g.short(), g.slug(), exe.display())),
+    }
+    Ok(report::ok(Some(g), format!("{} installed", f.name), json!({"found": report::value(&f), "installed": report::value(&done)})))
 }

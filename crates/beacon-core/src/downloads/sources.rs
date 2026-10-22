@@ -86,6 +86,16 @@ pub struct Source {
     /// The folder name under the games folder, for `archive_for` (default: the game's id).
     #[serde(default)]
     pub install_folder: Option<String>,
+    /// A mod or patch for this game (shown in its Mods catalog with a Download button).
+    #[serde(default)]
+    pub mod_for: Option<GameId>,
+    /// The catalog entry it downloads (none: its own row in the catalog).
+    #[serde(default)]
+    pub catalog_id: Option<String>,
+    /// How a mod goes in: `auto` (default), `library` (Beacon's mods, loads with -mod),
+    /// `game-folder` (merged into the game's folder, replaced files backed up) or `installer` (run in the game's prefix).
+    #[serde(default)]
+    pub install: Option<String>,
     #[serde(flatten)]
     pub kind: Kind,
 }
@@ -132,6 +142,16 @@ pub enum Kind {
         #[serde(default)]
         name: Option<String>,
     },
+    /// A ModDB mod, game or download page: the file it leads to now (see `moddb`).
+    Moddb {
+        url: String,
+        /// Wildcard for the download's slug, when `url` is a downloads list (newest match wins).
+        #[serde(default)]
+        file: Option<String>,
+        /// Slugs to skip (demos are skipped anyway).
+        #[serde(default)]
+        exclude: Vec<String>,
+    },
     Direct {
         url: String,
         #[serde(default)]
@@ -162,6 +182,11 @@ impl SourceList {
                 Kind::Direct { url, .. } => vec![url.as_str()],
                 _ => vec![],
             };
+            if let Kind::Moddb { url, .. } = &s.kind {
+                if super::moddb::classify(url).is_none() {
+                    bail!("sources.json: {} isn't a ModDB link ({url})", s.id);
+                }
+            }
             if let Kind::DriveFile { file, .. } = &s.kind {
                 if super::drive::file_id(file).is_none() {
                     bail!("sources.json: {} needs a Drive file id or link", s.id);
@@ -195,6 +220,11 @@ impl SourceList {
     /// The source of a game's ready-to-play archive.
     pub fn archive_for(&self, g: GameId) -> Option<&Source> {
         self.sources.iter().find(|s| s.archive_for == Some(g))
+    }
+
+    /// Mod downloads for a game.
+    pub fn mods_for(&self, g: GameId) -> Vec<&Source> {
+        self.sources.iter().filter(|s| s.mod_for == Some(g)).collect()
     }
 
     /// The source of a game's community launcher.
@@ -484,6 +514,11 @@ pub fn resolve(t: &dyn Transfer, list: &SourceList, learned: &mut Learned, src: 
         Kind::Github { repo, asset } => {
             let (url, name, size, how) = resolve_github(t, repo, asset)?;
             r(how, Target::File { url, name, size, md5: None })
+        }
+        Kind::Moddb { url, file, exclude } => {
+            let (mirror, info) = super::moddb::resolve(t, url, file.as_deref(), exclude)?;
+            let name = info.file_name.clone().unwrap_or_else(|| format!("{}.download", src.id));
+            r(How::Listed, Target::File { url: mirror, name, size: info.size, md5: info.md5 })
         }
         Kind::DriveFile { file, name } => {
             let id = super::drive::file_id(file).ok_or_else(|| anyhow!("{} isn't a Drive file", src.id))?;

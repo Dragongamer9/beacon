@@ -685,6 +685,9 @@ fn main() {
             private::launcher_get,
             private::app_update_check,
             private::app_update_apply,
+            private::mod_downloads,
+            private::mod_lookup,
+            private::mod_install,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Beacon");

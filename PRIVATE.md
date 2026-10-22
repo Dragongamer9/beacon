@@ -22,6 +22,17 @@ Beacon's own downloads. Don't publish its builds.
     deleted afterwards to save space.
   - A launcher or installer: it's kept in Beacon's tools folder and run in RoL's prefix, and Beacon finds the game
     when it closes. "Run the RoL launcher again" stays on the game's page until the game is installed.
+- **Mods without the browser.** In Mods → Browse known mods & patches, mods with a download get a **Download** button.
+  You can also paste any ModDB link under "Download from a link". Beacon follows ModDB's pages to the file, shows its
+  name and size, and downloads it once you say yes. The file is checked against ModDB's MD5, and downloads resume
+  where they stopped. Then it puts the mod in the right place for that game, wherever the game is installed:
+  - `.big` files or a mod's launcher go into Beacon's mods for the game, and get selected.
+  - Files that replace the game's own (a fixed exe, a patch's data) are copied into the game's folder. Anything
+    replaced is backed up under `backups/<game>/`.
+  - Setup programs run in the game's own prefix, where the registry already points at the game.
+  - Built in: Edain 4.x and its launcher (RotWK), The Dwarf Holds and Return of Shadow plus its patch (BFME),
+    Conquest Fixes, and the Armies of Exigo integrated-graphics fix. Add more as `moddb` sources in `sources.json`:
+    `mod_for`, an optional `catalog_id`, and `install` set to `auto`, `library`, `game-folder` or `installer`.
 - **.7z and .rar too.** Launchers and game archives can be .zip, .7z or .rar, both for downloads and for "Use a
   launcher you downloaded". They're extracted with bsdtar, 7-Zip, or unrar/unar for RAR files that the others can't
   open.
@@ -49,6 +60,8 @@ Beacon's own downloads. Don't publish its builds.
   - `drive-folder`: the newest file matching a pattern in a public Google Drive folder. Beacon gets past Drive's
     virus-scan warning page that large files get.
   - `drive-file`: one public Google Drive file (its link or id).
+  - `moddb`: a ModDB mod, game or download page. With a downloads list, `file` picks the newest download whose slug
+    matches, and `exclude` skips some (demos are always skipped).
   - `direct`: a plain https URL.
 - **Fixes without rebuilding.** Beacon fetches `sources.json` from the updates repo (public, no login), at most
   every 6 hours and on demand. The
@@ -76,6 +89,8 @@ beacon get bfme1 --yes           # accept a source Beacon only guessed after its
 beacon get uaw                   # newest UaW community launcher from its Drive folder, set up
 beacon get uaw --repair          # download it again even if it's the one in use
 beacon get rol                   # Rise of Legends from its Drive zip: the game, or its launcher to run
+beacon mod-get rotwk edain [--yes]   # a catalog mod: shows what it found, --yes downloads and installs it
+beacon mod-get bfme1 https://www.moddb.com/mods/… --yes   # any ModDB link
 beacon self-update [--check]     # update Beacon itself from the updates repo's newest release
 beacon sources                   # list version, sources, updates repo, games folder
 beacon sources check             # look every source up now

@@ -15,6 +15,8 @@ pub mod archive;
 pub mod basegame;
 pub mod drive;
 pub mod launcher;
+pub mod moddb;
+pub mod modget;
 pub mod selfupdate;
 pub mod sources;
 pub mod text;
