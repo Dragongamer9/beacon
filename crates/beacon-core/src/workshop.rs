@@ -538,7 +538,8 @@ pub fn install(
             // create_new: never follows or overwrites anything already there.
             let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&dest).with_context(|| format!("creating {}", dest.display()))?;
             let label = f.path.to_string_lossy().into_owned();
-            let max = if f.size > 0 { f.size } else { MAX_FILE_BYTES };
+            // With an MD5 the listed size is only a hint (the workshop gets it wrong now and then).
+            let max = if f.size > 0 && f.md5.is_none() { f.size } else { MAX_FILE_BYTES };
             let mut w = Hashing { file: &mut file, md5: <md5::Md5 as md5::Digest>::new() };
             let start = done;
             let got = http.download(&f.url, &mut w, max, &mut |b| {
@@ -547,7 +548,7 @@ pub fn install(
             })?;
             let hash = md5_hex(w.md5);
             file.flush()?;
-            if f.size > 0 && got != f.size {
+            if f.size > 0 && got != f.size && f.md5.is_none() {
                 bail!("{label}: got {got} bytes, the workshop said {}", f.size);
             }
             if let Some(want) = &f.md5 {

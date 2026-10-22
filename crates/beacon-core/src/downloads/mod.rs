@@ -227,14 +227,14 @@ pub fn matches(job: &FileJob, path: &Path, thorough: bool) -> bool {
     if !meta.is_file() {
         return false;
     }
-    if let Some(size) = job.size {
-        if meta.len() != size {
-            return false;
-        }
-    }
-    match (&job.md5, thorough || job.size.is_none()) {
-        (Some(want), true) => md5_file(path).map(|h| &h == want).unwrap_or(false),
-        _ => job.size.is_some() || job.md5.is_none(),
+    let size_ok = job.size.map(|s| meta.len() == s);
+    match (&job.md5, size_ok) {
+        // The size matches: that's enough for a quick check.
+        (Some(want), Some(true)) => !thorough || md5_file(path).map(|h| &h == want).unwrap_or(false),
+        // No size, or one that doesn't match (sources list sizes wrong now and then): the checksum decides.
+        (Some(want), _) => md5_file(path).map(|h| &h == want).unwrap_or(false),
+        (None, Some(ok)) => ok,
+        (None, None) => true,
     }
 }
 
@@ -279,7 +279,9 @@ pub fn fetch_file(t: &dyn Transfer, job: &FileJob, thorough: bool, progress: &mu
 }
 
 fn download_part(t: &dyn Transfer, job: &FileJob, part: &Path, progress: &mut dyn FnMut(u64)) -> Result<(u64, bool)> {
-    let max = job.size.unwrap_or(MAX_FILE_BYTES).min(MAX_FILE_BYTES);
+    // With an MD5 to check against, the listed size is only a hint (sources get it wrong now and
+    // then; the checksum is what counts). Without one, the size is the limit.
+    let max = if job.md5.is_some() { MAX_FILE_BYTES } else { job.size.unwrap_or(MAX_FILE_BYTES).min(MAX_FILE_BYTES) };
     let mut have = std::fs::symlink_metadata(part).ok().filter(|m| m.is_file()).map(|m| m.len()).unwrap_or(0);
     if have > max {
         std::fs::remove_file(part)?;
@@ -299,7 +301,7 @@ fn download_part(t: &dyn Transfer, job: &FileJob, part: &Path, progress: &mut dy
     };
     if let Some(len) = opened.len {
         if have + len > max {
-            bail!("{} is {} bytes, more than expected ({max})", text::file_name(&job.url), have + len);
+            bail!("{} is {} bytes, more than expected ({max})", label(job), have + len);
         }
     }
     let mut buf = vec![0u8; 256 * 1024];
@@ -313,7 +315,7 @@ fn download_part(t: &dyn Transfer, job: &FileJob, part: &Path, progress: &mut dy
         total += n as u64;
         got += n as u64;
         if total > max {
-            bail!("{} is larger than expected ({max} bytes)", text::file_name(&job.url));
+            bail!("{} is larger than expected ({max} bytes)", label(job));
         }
         file.write_all(&buf[..n])?;
         progress(total);
@@ -323,18 +325,25 @@ fn download_part(t: &dyn Transfer, job: &FileJob, part: &Path, progress: &mut dy
     Ok((got, resumed))
 }
 
+/// The file's name for messages (the destination's, not the CDN's hash-named URL).
+fn label(job: &FileJob) -> String {
+    job.dest.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| text::file_name(&job.url))
+}
+
 fn check_part(job: &FileJob, part: &Path) -> Result<()> {
     let len = std::fs::metadata(part)?.len();
-    let name = job.dest.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    if let Some(size) = job.size {
-        if len != size {
-            bail!("{name}: got {len} bytes, expected {size}");
-        }
-    }
+    let name = label(job);
     if let Some(want) = &job.md5 {
+        // The checksum is the real test; a size that differs from the listing is fine when it matches.
         let have = md5_file(part)?;
         if &have != want {
             bail!("{name}: checksum doesn't match (MD5 {have}, expected {want})");
+        }
+        return Ok(());
+    }
+    if let Some(size) = job.size {
+        if len != size {
+            bail!("{name}: got {len} bytes, expected {size}");
         }
     }
     Ok(())
@@ -499,6 +508,23 @@ mod tests {
         assert_eq!(fetch_file(&net, &j, false, &mut |_| {}).unwrap(), Fetched::Already);
         assert!(matches!(fetch_file(&net, &j, true, &mut |_| {}).unwrap(), Fetched::Downloaded { .. }));
         assert_eq!(std::fs::read(&j.dest).unwrap(), body);
+    }
+
+    #[test]
+    fn a_wrong_listed_size_is_fine_when_the_checksum_matches() {
+        let t = tempfile::tempdir().unwrap();
+        let body = vec![5u8; 50_000];
+        let net = FakeNet::with(&[("https://cdn.example/f", &body)]);
+        // Listed smaller (stale) and listed as 0: both download, the MD5 decides.
+        for listed in [1_000u64, 0] {
+            let mut j = job(t.path(), "https://cdn.example/f", &body);
+            j.size = Some(listed);
+            let _ = std::fs::remove_file(&j.dest);
+            assert!(matches!(fetch_file(&net, &j, false, &mut |_| {}).unwrap(), Fetched::Downloaded { .. }), "listed {listed}");
+            assert_eq!(std::fs::read(&j.dest).unwrap(), body);
+            // And it's recognised as done afterwards.
+            assert_eq!(fetch_file(&net, &j, false, &mut |_| {}).unwrap(), Fetched::Already);
+        }
     }
 
     #[test]
