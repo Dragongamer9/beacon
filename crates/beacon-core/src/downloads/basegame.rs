@@ -103,7 +103,8 @@ pub fn plan(entry: &Value, g: GameId, dir: &Path, lang: &str) -> Result<Plan> {
         }
         seen.push(key);
         let url = field_str(f, "Url").filter(|u| super::is_https(u)).ok_or_else(|| anyhow!("{name}: not an https download"))?;
-        let size = field(f, "Size").and_then(Value::as_u64);
+        // 0 means the source doesn't know.
+        let size = field(f, "Size").and_then(Value::as_u64).filter(|s| *s > 0);
         let md5 = field_str(f, "Md5").map(|m| m.trim().to_ascii_lowercase()).filter(|m| m.len() == 32 && m.chars().all(|c| c.is_ascii_hexdigit()));
         bytes = bytes.saturating_add(size.unwrap_or(0));
         files.push(FileJob { url, dest: dir.join(rel), size, md5 });
