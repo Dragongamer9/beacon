@@ -1,10 +1,9 @@
-//! **Private build only.** Beacon updates itself from the private repo's
-//! GitHub releases (with the read-only token from `private.json`).
+//! **Private build only.** Beacon updates itself from a public GitHub repo's
+//! releases (the updates repo in `private.json`), no login.
 //!
 //! * **Check:** `releases/latest`, compared with this build's version.
-//! * **Download:** the right package for how Beacon is installed, through the
-//!   asset API (the token goes to api.github.com only; the file itself comes
-//!   from the signed link GitHub redirects to), checked against the release's
+//! * **Download:** the right package for how Beacon is installed, from the
+//!   release's public download link, checked against the release's
 //!   `SHA256SUMS`.
 //! * **Install**, by how Beacon was installed:
 //!   - Linux AppImage (`$APPIMAGE`): the new AppImage replaces the old file.
@@ -20,7 +19,7 @@
 //!
 //!   Then Beacon restarts (or, for the MSI, exits so the installer can work).
 
-use super::{fetch_file, host, FileJob, Transfer};
+use super::{fetch_file, FileJob, Transfer};
 use crate::Beacon;
 use anyhow::{anyhow, bail, Context, Result};
 use serde::Serialize;
@@ -51,8 +50,8 @@ pub fn is_newer(candidate: &str, current: &str) -> bool {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Asset {
     pub name: String,
-    /// `api.github.com/repos/…/releases/assets/<id>`.
-    pub api_url: String,
+    /// The public download link (`github.com/<repo>/releases/download/<tag>/<name>`).
+    pub url: String,
     pub size: Option<u64>,
 }
 
@@ -70,7 +69,7 @@ pub struct Check {
     pub current: String,
     pub latest: Option<Release>,
     pub newer: bool,
-    /// Why it couldn't look (no token…).
+    /// Why it couldn't look (no network, no public releases…).
     pub problem: Option<String>,
     /// How this copy would be updated.
     pub method: Method,
@@ -153,21 +152,16 @@ pub fn asset_name(m: &Method, version: &str) -> Option<String> {
     })
 }
 
-fn gh_headers(token: &str, raw: bool) -> Vec<(&'static str, String)> {
-    vec![
-        ("Authorization", format!("Bearer {token}")),
-        ("Accept", if raw { "application/octet-stream" } else { "application/vnd.github+json" }.to_string()),
-        ("X-GitHub-Api-Version", "2022-11-28".to_string()),
-    ]
-}
-
-/// The newest full release of `repo`.
-pub fn latest(t: &dyn Transfer, repo: &str, token: &str) -> Result<Release> {
-    let h = gh_headers(token, false);
+/// The newest full release of a public `repo`.
+pub fn latest(t: &dyn Transfer, repo: &str) -> Result<Release> {
+    let repo = super::sources::check_repo(repo)?;
+    let h = [("Accept", "application/vnd.github+json".to_string()), ("X-GitHub-Api-Version", "2022-11-28".to_string())];
     let v = t.get_json(&format!("https://api.github.com/repos/{repo}/releases/latest"), &h).map_err(|e| {
         let m = format!("{e:#}");
-        if m.contains("HTTP 401") || m.contains("HTTP 403") || m.contains("HTTP 404") {
-            anyhow!("{m}: check the GitHub token (it needs Contents: read on {repo})")
+        if m.contains("HTTP 404") {
+            anyhow!("{m}: {repo} has no public releases (is the repo public, and has it made a release?)")
+        } else if m.contains("HTTP 403") || m.contains("HTTP 429") {
+            anyhow!("{m}: GitHub's limit for checks without a login (60 an hour) is used up; try again later")
         } else {
             e
         }
@@ -181,7 +175,7 @@ pub fn latest(t: &dyn Transfer, repo: &str, token: &str) -> Result<Release> {
         .filter_map(|a| {
             Some(Asset {
                 name: a.get("name")?.as_str()?.to_string(),
-                api_url: a.get("url")?.as_str().filter(|u| super::is_https(u))?.to_string(),
+                url: a.get("browser_download_url")?.as_str().filter(|u| super::is_https(u))?.to_string(),
                 size: a.get("size").and_then(Value::as_u64),
             })
         })
@@ -195,15 +189,9 @@ pub fn latest(t: &dyn Transfer, repo: &str, token: &str) -> Result<Release> {
     })
 }
 
-/// Download one asset to `dest` (resumable): the asset API with the token, then GitHub's signed link without it.
-fn download_asset(t: &dyn Transfer, token: &str, a: &Asset, dest: &Path, progress: &mut dyn FnMut(u64)) -> Result<()> {
-    let signed = t
-        .redirect_target(&a.api_url, &gh_headers(token, true))?
-        .ok_or_else(|| anyhow!("GitHub didn't hand out a download link for {}", a.name))?;
-    if host(&signed) == "api.github.com" {
-        bail!("GitHub sent {} back to its API instead of a download link", a.name);
-    }
-    fetch_file(t, &FileJob { url: signed, dest: dest.to_path_buf(), size: a.size, md5: None }, false, progress)?;
+/// Download one asset to `dest` (resumable).
+fn download_asset(t: &dyn Transfer, a: &Asset, dest: &Path, progress: &mut dyn FnMut(u64)) -> Result<()> {
+    fetch_file(t, &FileJob { url: a.url.clone(), dest: dest.to_path_buf(), size: a.size, md5: None }, false, progress)?;
     Ok(())
 }
 
@@ -244,14 +232,11 @@ pub enum Applied {
 }
 
 impl Beacon {
-    /// Is there a newer private release?
+    /// Is there a newer release in the updates repo?
     pub fn update_check(&self, t: &dyn Transfer) -> Check {
         let method = current_method();
         let s = self.download_store().settings();
-        let Some(token) = s.github_token.filter(|t| !t.trim().is_empty()) else {
-            return Check { current: CURRENT.into(), latest: None, newer: false, problem: Some("set the GitHub token (Launcher settings → Downloads) so Beacon can see its private releases".into()), method };
-        };
-        match latest(t, &s.sources_repo, token.trim()) {
+        match latest(t, &s.sources_repo) {
             Ok(r) => Check { current: CURRENT.into(), newer: is_newer(&r.version, CURRENT), latest: Some(r), problem: None, method },
             Err(e) => Check { current: CURRENT.into(), latest: None, newer: false, problem: Some(format!("{e:#}")), method },
         }
@@ -260,10 +245,8 @@ impl Beacon {
     /// Download the newest release for this copy, check it, and put it in place.
     pub fn update_apply(&self, t: &dyn Transfer, progress: &mut dyn FnMut(Option<u8>, &str)) -> Result<Applied> {
         let s = self.download_store().settings();
-        let token = s.github_token.filter(|t| !t.trim().is_empty()).ok_or_else(|| anyhow!("set the GitHub token first (Launcher settings → Downloads)"))?;
-        let token = token.trim().to_string();
         progress(None, "Looking for the newest Beacon");
-        let rel = latest(t, &s.sources_repo, &token)?;
+        let rel = latest(t, &s.sources_repo)?;
         if !is_newer(&rel.version, CURRENT) {
             bail!("Beacon {CURRENT} is already the newest");
         }
@@ -278,7 +261,7 @@ impl Beacon {
         let file = dir.join(&asset.name);
         let label = format!("Downloading Beacon {}", rel.version);
         let size = asset.size;
-        download_asset(t, &token, asset, &file, &mut |b| {
+        download_asset(t, asset, &file, &mut |b| {
             let pct = size.filter(|s| *s > 0).map(|s| (b.saturating_mul(95) / s).min(95) as u8);
             progress(pct, &label);
         })?;
@@ -286,7 +269,7 @@ impl Beacon {
         let sums_asset = rel.assets.iter().find(|a| a.name == "SHA256SUMS").ok_or_else(|| anyhow!("release {} has no SHA256SUMS to check against", rel.tag))?;
         let sums_file = dir.join("SHA256SUMS");
         let _ = std::fs::remove_file(&sums_file);
-        download_asset(t, &token, sums_asset, &sums_file, &mut |_| {})?;
+        download_asset(t, sums_asset, &sums_file, &mut |_| {})?;
         let sums = std::fs::read_to_string(&sums_file)?;
         let want_sum = sum_for(&sums, &asset.name).ok_or_else(|| anyhow!("SHA256SUMS doesn't list {}", asset.name))?;
         let have = sha256_file(&file)?;
@@ -462,26 +445,25 @@ mod tests {
     }
 
     #[test]
-    fn reads_the_latest_release_and_downloads_without_leaking_the_token() {
+    fn reads_the_latest_public_release_and_downloads_it() {
         let net = FakeNet::default();
         let rel = json!({
             "tag_name": "v0.0.10", "html_url": "https://github.com/o/r/releases/tag/v0.0.10", "body": "notes",
-            "assets": [{"name": "Beacon-x86_64.AppImage", "url": "https://api.github.com/repos/o/r/releases/assets/1", "size": 3}]
+            "assets": [{"name": "Beacon-x86_64.AppImage", "url": "https://api.github.com/repos/o/r/releases/assets/1",
+                        "browser_download_url": "https://github.com/o/r/releases/download/v0.0.10/Beacon-x86_64.AppImage", "size": 3}]
         });
         net.put("https://api.github.com/repos/o/r/releases/latest", rel.to_string().as_bytes());
-        let r = latest(&net, "o/r", "tok").unwrap();
+        let r = latest(&net, "o/r").unwrap();
         assert_eq!(r.version, "0.0.10");
         assert_eq!(r.assets[0].size, Some(3));
-        net.redirects.lock().unwrap().insert(r.assets[0].api_url.clone(), "https://objects.githubusercontent.com/signed?x=1".into());
-        net.put("https://objects.githubusercontent.com/signed?x=1", b"new");
+        net.put("https://github.com/o/r/releases/download/v0.0.10/Beacon-x86_64.AppImage", b"new");
         let t = tempfile::tempdir().unwrap();
         let dest = t.path().join("Beacon-x86_64.AppImage");
-        download_asset(&net, "tok", &r.assets[0], &dest, &mut |_| {}).unwrap();
+        download_asset(&net, &r.assets[0], &dest, &mut |_| {}).unwrap();
         assert_eq!(std::fs::read(&dest).unwrap(), b"new");
-        // No redirect: an error, never a download from the API with the token.
-        let mut bad = r.assets[0].clone();
-        bad.api_url = "https://api.github.com/repos/o/r/releases/assets/2".into();
-        assert!(download_asset(&net, "tok", &bad, &t.path().join("x"), &mut |_| {}).is_err());
+        // A repo with no public releases says so.
+        assert!(format!("{:#}", latest(&net, "o/none").unwrap_err()).contains("no public releases"));
+        assert!(latest(&net, "not a repo").is_err());
     }
 
     #[cfg(unix)]

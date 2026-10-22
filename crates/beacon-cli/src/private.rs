@@ -7,7 +7,7 @@ use beacon_core::downloads::{archive, basegame, launcher, selfupdate, sources, C
 use beacon_core::{report, Beacon};
 use clap::Subcommand;
 use serde_json::{json, Value};
-use std::io::{BufRead, IsTerminal, Write};
+use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
 
 #[derive(Subcommand)]
@@ -16,14 +16,10 @@ pub enum SourcesAction {
     List,
     /// Look every source up and check that its file answers.
     Check,
-    /// Fetch a newer sources.json from the private repo now.
+    /// Fetch a newer sources.json from the updates repo now.
     Update,
-    /// Store the GitHub token used for updates, read from stdin (Contents: read on the private repo).
-    Token {
-        /// Remove the saved token instead.
-        #[arg(long)]
-        clear: bool,
-    },
+    /// The public GitHub repo (owner/repo) Beacon updates itself and sources.json from.
+    Repo { repo: String },
     /// Where downloaded games go (`default` = Beacon's data folder).
     GamesDir { path: String },
 }
@@ -112,7 +108,7 @@ pub fn sources_cmd(ctx: &Ctx, b: &mut Beacon, action: Option<SourcesAction>) -> 
             let learned = store.learned();
             if !ctx.json {
                 println!("sources.json version {} ({})", list.version, if list == sources::SourceList::bundled() { "built in" } else { "downloaded" });
-                println!("updates from {} ({}), token {}", s.sources_repo, s.sources_branch, if s.github_token.is_some() { "set" } else { "not set" });
+                println!("updates from {} ({}, public)", s.sources_repo, s.sources_branch);
                 println!("games go to {}", b.games_root().display());
                 if let Some(api) = &learned.workshop_api {
                     println!("workshop found at {api} (learned)");
@@ -126,7 +122,6 @@ pub fn sources_cmd(ctx: &Ctx, b: &mut Beacon, action: Option<SourcesAction>) -> 
                 "version": list.version,
                 "sources": report::value(&list.sources),
                 "sources_repo": s.sources_repo,
-                "token_set": s.github_token.is_some(),
                 "games_dir": report::path(&b.games_root()),
                 "learned": report::value(&learned),
             }))
@@ -162,26 +157,13 @@ pub fn sources_cmd(ctx: &Ctx, b: &mut Beacon, action: Option<SourcesAction>) -> 
             }
             Ok(json!({"ok": u.skipped.is_none() || u.skipped.as_deref() == Some("checked recently"), "update": report::value(&u)}))
         }
-        SourcesAction::Token { clear } => {
+        SourcesAction::Repo { repo } => {
+            let r = sources::check_repo(&repo).map_err(|e| usage(e.to_string()))?;
             let mut s = store.settings();
-            if clear {
-                s.github_token = None;
-            } else {
-                let stdin = std::io::stdin();
-                if stdin.is_terminal() && !ctx.json {
-                    eprint!("GitHub token: ");
-                }
-                let mut line = String::new();
-                stdin.lock().read_line(&mut line)?;
-                let tok = line.trim().to_string();
-                if tok.is_empty() || tok.chars().any(|c| c.is_whitespace() || c.is_control()) {
-                    return Err(usage("that doesn't look like a GitHub token"));
-                }
-                s.github_token = Some(tok);
-            }
+            s.sources_repo = r.clone();
             store.save_settings(&s)?;
-            ctx.say(if clear { "Token removed." } else { "Token saved (readable only by you). `beacon sources update` fetches the list now." });
-            Ok(json!({"ok": true, "token_set": s.github_token.is_some()}))
+            ctx.say(format!("Updates come from {r} now. `beacon sources update` and `beacon self-update --check` look there."));
+            Ok(json!({"ok": true, "sources_repo": r}))
         }
         SourcesAction::GamesDir { path } => {
             let mut s = store.settings();

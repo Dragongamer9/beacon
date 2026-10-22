@@ -934,7 +934,7 @@ async function onGameEvent({ game: id, phase, message }) {
 // BFME, BFME II and RotWK straight from the BFME Foundation's CDN (the packages the All-in-One launcher installs),
 // resolved through sources.json so a moved link is found again. RotWK brings BFME II along when it's missing.
 
-let dlInfo = null; // downloads_info: sources version, token, games folder, last check
+let dlInfo = null; // downloads_info: sources version, updates repo, games folder, last check
 let cdnBusy = null; // game id while downloading
 const cdnGuess = {}; // game id → note, when the source only turned up a guess
 
@@ -1024,12 +1024,12 @@ function downloadsRows() {
       (c) =>
         `<div class="row" style="cursor:default"><span style="min-width:0"><span class="label">${esc(c.title)}</span><span class="sub">${esc(c.detail)}</span></span><span class="badge${c.state === "broken" ? " bad" : ""}">${esc(STATE_BADGE[c.state] ?? c.state)}</span></div>`
     ),
-    rowHTML({ key: "src-update", label: "Update the sources list", sub: `Version ${d.version} (${d.built_in ? "built in" : "downloaded"}) · from ${d.sources_repo}${d.token_set ? "" : " · needs a token"}`, value: "Update" }),
+    rowHTML({ key: "src-update", label: "Update the sources list", sub: `Version ${d.version} (${d.built_in ? "built in" : "downloaded"}) · from ${d.sources_repo}`, value: "Update" }),
     fieldHTML({
-      key: "gh-token",
-      label: "GitHub token",
-      placeholder: d.token_set ? "Saved — paste a new one to replace it" : `Read-only token for ${d.sources_repo}`,
-      help: "Fine-grained, Contents: read on the private repo only. Lets Beacon fetch a fixed sources.json without a rebuild.",
+      key: "updates-repo",
+      label: "Updates come from",
+      placeholder: d.sources_repo,
+      help: "A public GitHub repo (owner/repo): Beacon's own updates and fixes to the download list come from its releases and its sources.json.",
     }),
     `<div class="mod-line">${rowHTML({ key: "games-dir", label: "Downloaded games go to", sub: d.games_dir, value: "Change" })}${d.custom_games_dir ? `<button class="nav side" data-key="games-dir-default">Default</button>` : ""}</div>`,
   ];
@@ -1058,13 +1058,19 @@ function wireDownloads(on, rows) {
       toast(String(e?.message ?? e), true);
     }
   });
-  const tok = rows.querySelector("#f-gh-token");
-  tok?.addEventListener("change", async () => {
-    const value = tok.value;
-    tok.value = "";
-    if (await act(() => api.call("set_github_token", { token: value }), value.trim() ? "Token saved (only readable by you)" : "Token removed")) {
+  const repo = rows.querySelector("#f-updates-repo");
+  repo?.addEventListener("change", async () => {
+    const value = repo.value.trim();
+    repo.value = "";
+    if (!value) return;
+    try {
+      const r = await api.call("set_updates_repo", { repo: value });
       dlInfo = await api.call("downloads_info").catch(() => dlInfo);
+      appUpd = null;
       render();
+      toast(`Updates come from ${r} now`);
+    } catch (e) {
+      toast(String(e?.message ?? e), true);
     }
   });
   const setDir = async (path) => {
@@ -1130,7 +1136,7 @@ function appUpdateRow() {
   const c = appUpd;
   const label = c?.newer ? `Update to Beacon ${c.latest.version}` : "Check for updates";
   const sub = !c
-    ? "From your private releases (needs the GitHub token)"
+    ? `From ${dlInfo?.sources_repo ?? "the updates repo"}'s releases`
     : c.problem
       ? c.problem
       : c.newer

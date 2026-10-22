@@ -26,9 +26,10 @@ Beacon's own downloads. Don't publish its builds.
   launcher you downloaded". They're extracted with bsdtar, 7-Zip, or unrar/unar for RAR files that the others can't
   open.
 - **Updates itself.** Launcher settings → About → **Check for updates** (also checked on start-up, or run
-  `beacon self-update`) looks at this repo's newest release with the same GitHub token. The download is checked
-  against the release's `SHA256SUMS` before anything is replaced, and the token is only ever sent to
-  api.github.com. How it installs depends on how Beacon was installed:
+  `beacon self-update`) looks at the newest release of the *updates repo*. That's a public GitHub repo, no login,
+  `Dragongamer9/beacon-private` unless you change it in Launcher settings → Downloads or with
+  `beacon sources repo owner/repo`. The download is checked against the release's `SHA256SUMS` before anything is
+  replaced. How it installs depends on how Beacon was installed:
   - AppImage: the file is replaced, and Beacon restarts.
   - tar.gz, or any folder Beacon can write to: `beacon`/`beacon-app` are replaced, and Beacon restarts.
   - .deb/.rpm: installed with `pkexec` (asks for your password). On Bazzite and other atomic systems, the package
@@ -49,7 +50,8 @@ Beacon's own downloads. Don't publish its builds.
     virus-scan warning page that large files get.
   - `drive-file`: one public Google Drive file (its link or id).
   - `direct`: a plain https URL.
-- **Fixes without rebuilding.** Beacon fetches `sources.json` from this repo, at most every 6 hours and on demand. The
+- **Fixes without rebuilding.** Beacon fetches `sources.json` from the updates repo (public, no login), at most
+  every 6 hours and on demand. The
   higher `version` wins over the copy built in. So when a site changes in a way the scanner can't follow, edit
   `sources.json` here, bump `version`, and push. Every install of this build picks it up.
 - **Check sources** (on start-up, in Launcher settings, or `beacon sources check`) looks up every source and touches
@@ -57,11 +59,10 @@ Beacon's own downloads. Don't publish its builds.
 
 ## Setting it up
 
-1. **Token** (for `sources.json` updates):
-   - On GitHub, go to Settings → Developer settings → Fine-grained tokens.
-   - Create a token with access to `Dragongamer9/beacon-private` only and **Contents: read-only**.
-   - Paste it into Launcher settings → Downloads → GitHub token, or run `beacon sources token` (it reads from stdin).
-   - It's stored in `~/.config/beacon/private.json`, readable only by you.
+1. **Updates repo:** Beacon reads its updates and `sources.json` from a public repo, `Dragongamer9/beacon-private` by
+   default, so that repo has to be public for updates to work. To use another repo, set it in Launcher settings →
+   Downloads → "Updates come from", or run `beacon sources repo owner/repo`. GitHub allows about 60 checks an hour
+   without a login, which is plenty.
 2. **Games folder** (optional): the default is `~/.local/share/beacon/games/<BFME1|BFME2|RotWK>`. Change it in
    Launcher settings → Downloads, or with `beacon sources games-dir /path` (`default` resets it).
 
@@ -75,11 +76,11 @@ beacon get bfme1 --yes           # accept a source Beacon only guessed after its
 beacon get uaw                   # newest UaW community launcher from its Drive folder, set up
 beacon get uaw --repair          # download it again even if it's the one in use
 beacon get rol                   # Rise of Legends from its Drive zip: the game, or its launcher to run
-beacon self-update [--check]     # update Beacon itself from this repo's newest release
-beacon sources                   # list version, sources, token, games folder
+beacon self-update [--check]     # update Beacon itself from the updates repo's newest release
+beacon sources                   # list version, sources, updates repo, games folder
 beacon sources check             # look every source up now
-beacon sources update            # fetch sources.json from this repo now
-beacon sources token [--clear]   # store the GitHub token (stdin)
+beacon sources update            # fetch sources.json from the updates repo now
+beacon sources repo <owner/repo> # the public repo updates come from
 beacon sources games-dir <path|default>
 ```
 
