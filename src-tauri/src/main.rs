@@ -816,7 +816,8 @@ async fn tools_install(app: AppHandle, tool: String, target: String, version: Op
         return Err(format!("unknown target {target}"));
     }
     let (home, data) = {
-        let b = app.state::<AppState>().beacon.lock().unwrap();
+        let st = app.state::<AppState>();
+        let b = st.beacon.lock().unwrap();
         (b.paths.home.clone(), b.paths.data_dir.clone())
     };
     let app2 = app.clone();
@@ -851,7 +852,8 @@ fn tools_remove(state: State<AppState>, tool: String, target: String, name: Stri
 #[tauri::command]
 async fn tools_update(app: AppHandle) -> CmdResult<(Snapshot, String)> {
     let (home, data) = {
-        let b = app.state::<AppState>().beacon.lock().unwrap();
+        let st = app.state::<AppState>();
+        let b = st.beacon.lock().unwrap();
         (b.paths.home.clone(), b.paths.data_dir.clone())
     };
     let app2 = app.clone();
@@ -993,7 +995,8 @@ fn main() {
             if handle.state::<AppState>().beacon.lock().unwrap().config.tools_auto_update {
                 std::thread::spawn(move || {
                     let (home, data) = {
-                        let b = handle.state::<AppState>().beacon.lock().unwrap();
+                        let st = handle.state::<AppState>();
+                        let b = st.beacon.lock().unwrap();
                         (b.paths.home.clone(), b.paths.data_dir.clone())
                     };
                     if let Ok(done) = tools::update_latest(&workshop::Net::new(), &home, &data, &mut |_: Option<u8>, _: &str| {}) {
