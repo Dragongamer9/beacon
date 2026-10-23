@@ -121,10 +121,12 @@ pub fn parse_start_page(html: &str, page_url: &str) -> Option<String> {
     if let Some(u) = text::links(html, page_url).into_iter().map(|l| l.url).find(|u| u.contains("/downloads/mirror/")) {
         return Some(u);
     }
+    // In a script, the link may be written with escaped slashes (`\/downloads\/mirror\/…`).
+    let html = html.replace("\\/", "/");
     let i = html.find("/downloads/mirror/")?;
     let start = html[..i].rfind(['"', '\'']).map(|s| s + 1).unwrap_or(i);
     let end = html[i..].find(['"', '\'', '<', ' ']).map(|e| i + e).unwrap_or(html.len());
-    text::join(page_url, &html[start..end].replace("\\/", "/"))
+    text::join(page_url, &html[start..end])
 }
 
 /// Download pages a downloads list links to, in page order (newest first).

@@ -33,6 +33,12 @@ Beacon's own downloads. Don't publish its builds.
   - Built in: Edain 4.x and its launcher (RotWK), The Dwarf Holds and Return of Shadow plus its patch (BFME),
     Conquest Fixes, and the Armies of Exigo integrated-graphics fix. Add more as `moddb` sources in `sources.json`:
     `mod_for`, an optional `catalog_id`, and `install` set to `auto`, `library`, `game-folder` or `installer`.
+- **Downloads menu.** The **Downloads** button under the game list (its badge counts what's running) lists every
+  download, whether game, launcher, mod or Beacon update, with a live progress bar. Downloads run in the background,
+  so you can keep using Beacon.
+  - **Pause** stops a download and keeps the partial file; **Resume** carries on from there.
+  - A failed download gets **Try again**. A download whose link changed waits for **Use what Beacon found**.
+  - **Kept downloads** shows the space taken by partial downloads and kept setups. **Clear kept downloads** frees it.
 - **.7z and .rar too.** Launchers and game archives can be .zip, .7z or .rar, both for downloads and for "Use a
   launcher you downloaded". They're extracted with bsdtar, 7-Zip, or unrar/unar for RAR files that the others can't
   open.

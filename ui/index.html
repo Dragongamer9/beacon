@@ -28,6 +28,7 @@
       <nav class="game-list" id="shelf" aria-label="Game list"></nav>
       <div class="library-actions">
         <button class="nav ghost" id="btn-scan"><svg viewBox="0 0 24 24"><use href="#i-scan"/></svg>Find games</button>
+        <button class="nav ghost" id="btn-downloads"><svg viewBox="0 0 24 24"><use href="#i-download"/></svg>Downloads<span class="count" id="dl-count" hidden></span></button>
         <button class="nav ghost" id="btn-launcher-settings"><svg viewBox="0 0 24 24"><use href="#i-cog"/></svg>Launcher</button>
       </div>
     </aside>
@@ -67,6 +68,12 @@
       <button class="nav row-btn" id="btn-add-mod-folder"><svg viewBox="0 0 24 24"><use href="#i-folder"/></svg>Add mod folder</button>
       <button class="nav row-btn" id="btn-open-mods"><svg viewBox="0 0 24 24"><use href="#i-open"/></svg>Open mods folder</button>
     </div>
+  </aside>
+
+  <aside class="layer sheet" id="sheet-downloads" hidden>
+    <header><p class="kicker">Beacon</p><h2>Downloads</h2></header>
+    <div class="rows" id="downloads-rows"></div>
+    <div class="sheet-foot" id="downloads-foot"></div>
   </aside>
 
   <aside class="layer sheet" id="sheet-catalog" hidden>
