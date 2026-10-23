@@ -21,7 +21,15 @@ const RESOLUTIONS = ["1280x720", "1280x800", "1366x768", "1600x900", "1920x1080"
   RESOLUTIONS.native = native;
 })();
 
-const game = () => snap.games[sel];
+// The list: Beacon's own games, then the games added by hand (Other Games), then "Add a game".
+const ADD_ITEM = { id: "add", add: true, title: "Add a game", short: "Add a game", family: "other", installed: true, ready: true, issues: [] };
+const customItem = (c) => ({ ...c, id: `custom:${c.id}`, cid: c.id, custom: true, short: c.title, family: "other", runner_pick: c.runner, runner: c.resolved_runner, runner_choice: c.runner });
+let itemsCache = { snap: null, list: [] };
+function items() {
+  if (itemsCache.snap !== snap) itemsCache = { snap, list: [...snap.games, ...(snap.custom || []).map(customItem), ADD_ITEM] };
+  return itemsCache.list;
+}
+const game = () => items()[sel] ?? items()[0];
 const isRunning = (id) => snap.running.includes(id);
 const resText = (r) => (r ? `${r.width}x${r.height}` : "");
 
@@ -85,16 +93,21 @@ async function loadCommunity(id) {
 }
 const isSage = (g) => g.family === "bfme";
 
+function shelfKey() {
+  return items().map((g) => `${g.id}|${g.short}|${g.icon_url ? g.icon_url.length : 0}`).join(",");
+}
+
 function buildShelf() {
   const list = $("#shelf");
+  buildShelf.key = shelfKey();
   const row = (g, i) => `
-      <button class="nav game-row" data-group="shelf" data-game="${g.id}" data-index="${i}">
-        <span class="swatch" aria-hidden="true"></span>
+      <button class="nav game-row${g.add ? " add-row" : ""}" data-group="shelf" data-game="${esc(g.id)}" data-index="${i}">
+        ${g.custom && g.icon_url ? `<img class="swatch icon" src="${esc(g.icon_url)}" alt="">` : `<span class="swatch" aria-hidden="true"></span>`}
         <span class="r-title">${esc(g.title.replace(/^The Lord of the Rings: /, "").replace(/^Star Wars: /, "").replace(/^Rise of Nations: /, ""))}</span>
         <span class="r-state"></span>
       </button>`;
   list.innerHTML = SECTIONS.map(([label, fams]) => {
-    const members = snap.games.map((g, i) => [g, i]).filter(([g]) => fams.includes(g.family));
+    const members = items().map((g, i) => [g, i]).filter(([g]) => fams.includes(g.family));
     if (!members.length) return "";
     return `<div class="list-group"><p class="list-label">${esc(label)}</p>${members.map(([g, i]) => row(g, i)).join("")}</div>`;
   }).join("");
@@ -107,9 +120,11 @@ function buildShelf() {
 
 function select(i) {
   if (i === sel && document.body.dataset.accent === game().id) return;
-  sel = (i + snap.games.length) % snap.games.length;
+  sel = (i + items().length) % items().length;
   render();
-  loadMods(game().id).then(renderHero).catch(() => {});
+  const g = game();
+  if (g.custom) loadCustomArt(g).then(renderHero).catch(() => {});
+  else if (!g.add) loadMods(g.id).then(renderHero).catch(() => {});
 }
 
 function renderShelf() {
@@ -119,13 +134,16 @@ function renderShelf() {
     current.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "smooth" });
   }
   document.querySelectorAll(".game-row").forEach((el) => {
-    const g = snap.games[Number(el.dataset.index)];
+    const g = items()[Number(el.dataset.index)];
+    if (!g) return;
     const running = isRunning(g.id);
     el.classList.toggle("selected", g === game());
-    el.classList.toggle("is-ready", g.ready && !running);
+    el.classList.toggle("is-ready", g.ready && !running && !g.add);
     el.classList.toggle("is-running", running);
     el.classList.toggle("is-missing", !g.installed);
-    el.querySelector(".r-state").textContent = running ? "Running" : g.ready ? "Ready" : g.installed ? "Needs attention" : "Not installed";
+    el.querySelector(".r-state").textContent = g.add
+      ? "Any Windows game"
+      : running ? "Running" : g.ready ? (g.custom && g.play_seconds ? fmtPlay(g.play_seconds) : "Ready") : g.installed ? "Needs attention" : "Not installed";
   });
 }
 
@@ -149,6 +167,13 @@ function heroCards(g) {
 
 function renderHero() {
   const g = game();
+  if (g.custom || g.add) return renderCustomHero(g);
+  $("#hero-icon").hidden = true;
+  $("#hero-art").classList.remove("on");
+  $(".art-emblem").style.display = "";
+  $("#btn-mods").hidden = false;
+  $("#btn-game-settings").hidden = false;
+  $("#btn-mods").querySelector("use")?.setAttribute("href", "#i-scroll");
   document.body.dataset.accent = g.id;
   $("#hero-title").textContent = g.title;
   $("#hero-kicker").textContent = KICKERS[g.id] ?? "The Lord of the Rings";
@@ -204,6 +229,10 @@ function renderHints(pad = renderHints.pad) {
 
 function render() {
   if (!snap) return;
+  if (buildShelf.key !== shelfKey()) {
+    sel = Math.min(sel, items().length - 1);
+    buildShelf();
+  }
   renderShelf();
   renderHero();
   // Only the top sheet re-renders; ones underneath refresh when uncovered.
@@ -214,12 +243,20 @@ function render() {
   if (openSheet === "launcher") renderLauncherSheet();
   if (openSheet === "downloads") renderDownloadsSheet();
   if (openSheet === "uninstall") renderUninstallSheet();
+  if (openSheet === "add") renderAddSheet();
+  if (openSheet === "custom") renderCustomSheet();
+  if (openSheet === "wine") renderWineSheet();
+  if (openSheet === "pick") renderPickSheet();
+  if (openSheet === "tools") renderToolsSheet();
+  if (openSheet === "tool") renderToolSheet();
 }
 
 // ---------------------------------------------------------------- actions
 
 async function play() {
   const g = game();
+  if (g.add) return open("add", $("#sheet-add"));
+  if (g.custom) return playCustom(g);
   if (!g.installed) return openGameSheet();
   if (!g.ready || isRunning(g.id)) return;
   try {
@@ -872,10 +909,11 @@ function renderLauncherSheet() {
       : [
           `<p class="section-label">Default runner</p>`,
           rowHTML({ key: "defrunner", label: "Runner for all games", sub: "Each game can override this", value: def ? def.name : `Automatic${best ? ` (${best.name})` : ""}`, cycle: true }),
+          `<button class="nav row-btn" data-key="tools"><svg viewBox="0 0 24 24"><use href="#i-download"/></svg>Compatibility tools: get GE-Proton, UMU-Proton, Wine, DXVK… for Beacon, Steam, Lutris, Heroic and Bottles</button>`,
           `<p class="section-label">Runners found</p>`,
           ...(snap.runners.length
             ? snap.runners.map((r) => `<div class="row" style="cursor:default"><span style="min-width:0"><span class="label">${esc(r.name)}</span><span class="sub">${esc(r.path)}</span></span><span class="badge">${esc(r.kind)}</span></div>`)
-            : [`<p class="section-label">None — install GE-Proton (ProtonPlus or ProtonUp-Qt), umu-launcher, or Wine.</p>`]),
+            : [`<p class="section-label">None yet — get GE-Proton or UMU-Proton under Compatibility tools.</p>`]),
         ]),
     `<p class="section-label">BFME All-in-One launcher</p>`,
     ...aio.map((a) => {
@@ -900,6 +938,7 @@ function renderLauncherSheet() {
   });
   on("defrunner", "click", (e) => e.currentTarget.dispatchEvent(new CustomEvent("cycle", { detail: 1 })));
   on("data", "click", () => act(() => api.call("open_path", { path: snap.data_dir })));
+  on("tools", "click", openToolsSheet);
   wireAio(on);
   wireDownloads(on, rows);
   on("app-update", "click", appUpdate);
@@ -1421,6 +1460,584 @@ function onSourcesChecked({ checks, updated }) {
   if (openSheet === "launcher" || openSheet === "game") render();
 }
 
+// ---------------------------------------------------------------- games added by hand (Faugus-style)
+// Any Windows program or installer, each in its own Wine prefix with its own runner and options. They sit under
+// Other Games; the last tile adds one.
+
+const fmtPlay = (s) => (s >= 3600 ? `${(s / 3600).toFixed(s >= 36000 ? 0 : 1)} h played` : s >= 60 ? `${Math.round(s / 60)} min played` : "Played");
+const fmtDate = (t) => (t ? new Date(t * 1000).toLocaleDateString([], { day: "numeric", month: "short", year: "numeric" }) : "");
+const artCache = {};
+const note = (t) => `<p class="section-label" style="text-transform:none;letter-spacing:0;font-weight:400">${t}</p>`;
+const cg = (cid) => (snap.custom || []).find((c) => c.id === cid);
+
+async function loadCustomArt(g) {
+  if (!artCache[g.cid]) artCache[g.cid] = await api.call("custom_art", { id: g.cid }).catch(() => ({}));
+  return artCache[g.cid];
+}
+
+function renderCustomHero(g) {
+  document.body.dataset.accent = g.id;
+  const art = g.custom ? artCache[g.cid] || {} : {};
+  const heroArt = $("#hero-art");
+  heroArt.style.backgroundImage = art.hero ? `url("${art.hero}")` : "";
+  heroArt.classList.toggle("on", !!art.hero);
+  const icon = $("#hero-icon");
+  icon.hidden = !(g.custom && (art.cover || g.icon_url));
+  if (!icon.hidden) icon.src = art.cover || g.icon_url;
+  $(".art-emblem").style.display = icon.hidden ? "" : "none";
+  $("#hero-emblem").setAttribute("href", g.add ? "#emblem-add" : "#emblem-custom");
+  $("#hero-title").textContent = g.title;
+  $("#btn-mods").hidden = !g.custom;
+  $("#btn-game-settings").hidden = !g.custom;
+  const play = $("#btn-play");
+  const label = $("#play-label");
+  const issue = $("#hero-issue");
+  if (g.add) {
+    $("#hero-kicker").textContent = "Other Games";
+    $("#hero-chips").innerHTML = (snap.custom || []).length ? `<span class="chip">${snap.custom.length} added</span>` : "";
+    issue.hidden = false;
+    issue.textContent = snap.native
+      ? "Add any Windows game or installer. Beacon keeps its icon, arguments and play time."
+      : "Add any Windows game or installer. Each one gets its own Wine prefix, with the runner and options you pick — like Faugus Launcher, inside Beacon.";
+    label.textContent = "Add a game";
+    play.disabled = false;
+    $("#hero-cards").innerHTML = "";
+    return;
+  }
+  $("#hero-kicker").textContent = g.source === "faugus" ? "From Faugus Launcher" : "Added in Beacon";
+  const running = isRunning(g.id);
+  const chips = [];
+  if (running) chips.push(`<span class="chip run"><span class="dot"></span>Running</span>`);
+  else if (g.ready) chips.push(`<span class="chip ok"><span class="dot"></span>Ready</span>`);
+  else chips.push(`<span class="chip bad"><span class="dot"></span>${g.installed ? "Needs attention" : "Not installed"}</span>`);
+  if (g.runner && !snap.native) chips.push(`<span class="chip">${esc(g.runner.name)}</span>`);
+  if (g.play_seconds) chips.push(`<span class="chip">${fmtPlay(g.play_seconds)}</span>`);
+  if (g.last_played) chips.push(`<span class="chip">Last played ${esc(fmtDate(g.last_played))}</span>`);
+  $("#hero-chips").innerHTML = chips.join("");
+  const err = g.issues.find((i) => i.level === "error");
+  const warn = g.issues.find((i) => i.level === "warn");
+  issue.hidden = !(err || warn);
+  issue.innerHTML = err ? `<strong>Can't start yet.</strong> ${esc(err.message)}` : warn ? esc(warn.message) : "";
+  if (!g.exe && g.installer) {
+    label.textContent = "Choose the game's program";
+    play.disabled = running;
+  } else {
+    label.textContent = running ? "Running…" : "Play";
+    play.disabled = running || !g.ready;
+  }
+  $("#mods-label").textContent = "Wine tools";
+  $("#btn-mods").querySelector("use")?.setAttribute("href", "#i-wine");
+  $("#hero-cards").innerHTML = "";
+}
+
+async function playCustom(g) {
+  if (!g.exe && g.installer) return openPick(g);
+  if (!g.ready || isRunning(g.id)) return;
+  try {
+    await api.call("custom_launch", { id: g.cid });
+  } catch (e) {
+    toast(String(e?.message ?? e), true);
+  }
+}
+
+let customJob = null; // { id, job } while something we started for a game added by hand runs
+
+async function onCustomEvent({ id, phase, job, message }) {
+  const key = `custom:${id}`;
+  const c = cg(id);
+  const title = c?.title ?? id;
+  if (phase === "preparing") {
+    customJob = { id, job };
+    snap.running = [...new Set([...snap.running, key])];
+    showOverlay({
+      title: job === "launch" ? "Lighting the beacon…" : job === "install" ? "Getting the installer ready…" : "Getting the prefix ready…",
+      text: snap.native ? `Starting ${title}.` : `Getting ${title}'s Wine prefix ready. The first time can take a minute.`,
+    });
+  } else if (phase === "running") {
+    if (job === "tool") {
+      hideOverlay();
+      toast(`Started in ${title}'s prefix`);
+    } else {
+      showOverlay(
+        job === "launch"
+          ? { title: `${title} is running`, text: "Beacon will be right here when you're done." }
+          : { title: job === "install" ? "Installer running" : "Program running", text: "Follow its window. Beacon takes over again when it closes." }
+      );
+    }
+  } else {
+    customJob = null;
+    snap = await api.call("get_state");
+    if (job === "install" && phase !== "error") {
+      // onInstallDone opens the program picker.
+      hideOverlay();
+    } else if (phase === "error" || message) {
+      showOverlay({ title: phase === "error" ? `${title} couldn't start` : `${title} closed`, text: message || "", error: true, ok: true });
+    } else hideOverlay();
+  }
+  render();
+}
+
+let pickFor = null; // { cid, candidates }
+
+function onInstallDone({ id, candidates }) {
+  pickFor = { cid: id, candidates };
+  api.call("get_state").then((s) => {
+    snap = s;
+    const i = items().findIndex((x) => x.cid === id);
+    if (i >= 0) sel = i;
+    render();
+    open("pick", $("#sheet-pick"));
+  });
+}
+
+async function openPick(g) {
+  pickFor = { cid: g.cid, candidates: await api.call("custom_candidates", { id: g.cid }).catch(() => []) };
+  open("pick", $("#sheet-pick"));
+}
+
+function renderPickSheet() {
+  const c = cg(pickFor?.cid);
+  if (!c) return closeSheet();
+  $("#sheet-pick").querySelector("[data-custom-title]").textContent = c.title;
+  const rows = $("#pick-rows");
+  const base = (p) => p.split("/").pop();
+  rows.innerHTML = [
+    note(pickFor.candidates.length ? "Programs the installer put in the game's prefix, likeliest first:" : "Beacon didn't find a program in the game's prefix. Choose it yourself — or run the installer again from Wine tools."),
+    ...pickFor.candidates.map((p, i) => rowHTML({ key: `pick:${i}`, label: base(p), sub: p, value: "Use" })),
+    `<button class="nav row-btn" data-key="browse"><svg viewBox="0 0 24 24"><use href="#i-folder"/></svg>Choose another program…</button>`,
+    `<button class="nav row-btn" data-key="later"><svg viewBox="0 0 24 24"><use href="#i-x"/></svg>Later (Play asks again)</button>`,
+  ].join("");
+  const use = async (path) => {
+    if (await act(() => api.call("custom_set", { id: c.id, key: "exe", value: path }))) {
+      closeAllSheets();
+      toast(`${c.title} is ready to play`);
+    }
+  };
+  pickFor.candidates.forEach((p, i) => rows.querySelector(`[data-key="pick:${i}"]`).addEventListener("click", () => use(p)));
+  rows.querySelector('[data-key="browse"]').addEventListener("click", async () => {
+    const p = await api.call("pick_file", { kind: "game" });
+    if (p) use(p);
+  });
+  rows.querySelector('[data-key="later"]').addEventListener("click", closeSheet);
+  nav.refocus();
+}
+
+// Add a game
+function renderAddSheet() {
+  const rows = $("#add-rows");
+  rows.innerHTML = [
+    rowHTML({ key: "add-exe", label: "Add a Windows program", sub: "A game's .exe — its icon is taken from it", value: "Choose" }),
+    rowHTML({ key: "add-install", label: "Install from an installer", sub: snap.native ? "Run setup.exe or an .msi, then pick the game it installed" : "Runs setup.exe or an .msi in a new Wine prefix, then you pick the game it installed", value: "Choose" }),
+    `<p class="section-label">Your library</p>`,
+    ...(snap.faugus ? [rowHTML({ key: "import-faugus", label: "Import from Faugus Launcher", sub: snap.faugus, value: "Import" })] : []),
+    rowHTML({ key: "import-file", label: "Import from a file", sub: "A Beacon export, or Faugus Launcher's games.json", value: "Choose" }),
+    rowHTML({ key: "export", label: "Export your games", sub: "Every game you added and its play time, for another PC or a backup", value: "Save" }),
+    ...(snap.native ? [] : [`<p class="section-label">Runners</p>`, `<button class="nav row-btn" data-key="tools"><svg viewBox="0 0 24 24"><use href="#i-download"/></svg>Compatibility tools (GE-Proton, UMU-Proton, Wine, DXVK…)</button>`]),
+  ].join("");
+  const on = (key, fn) => rows.querySelector(`[data-key="${key}"]`)?.addEventListener("click", fn);
+  on("add-exe", async () => {
+    const path = await api.call("pick_file", { kind: "game" });
+    if (!path) return;
+    if (/(^|\/)(setup[^/]*|[^/]*install[^/]*)\.exe$|\.msi$/i.test(path) && !confirmTwice("add-exe", "That looks like an installer — press again to add it as the game anyway, or use “Install from an installer”")) return;
+    try {
+      const [next, id] = await api.call("custom_add", { path, title: null });
+      snap = next;
+      closeAllSheets();
+      selectCustom(id);
+      toast(`Added ${cg(id)?.title ?? id} — set it up under Game settings if it needs it`);
+    } catch (e) {
+      toast(String(e?.message ?? e), true);
+    }
+  });
+  on("add-install", async () => {
+    const path = await api.call("pick_file", { kind: "game" });
+    if (!path) return;
+    try {
+      const [next, id] = await api.call("custom_install", { path, title: null });
+      snap = next;
+      closeAllSheets();
+      selectCustom(id);
+    } catch (e) {
+      toast(String(e?.message ?? e), true);
+    }
+  });
+  on("import-faugus", () => importGames(null));
+  on("import-file", async () => {
+    const path = await api.call("pick_file", { kind: "json" });
+    if (path) importGames(path);
+  });
+  on("export", async () => {
+    try {
+      const msg = await api.call("custom_export");
+      if (msg) toast(msg);
+    } catch (e) {
+      toast(String(e?.message ?? e), true);
+    }
+  });
+  on("tools", openToolsSheet);
+  nav.refocus();
+}
+
+async function importGames(path) {
+  try {
+    const [next, msg] = await api.call("custom_import", { path });
+    snap = next;
+    render();
+    toast(msg);
+  } catch (e) {
+    toast(String(e?.message ?? e), true);
+  }
+}
+
+function selectCustom(cid) {
+  const i = items().findIndex((x) => x.cid === cid);
+  if (i >= 0) {
+    sel = i;
+    render();
+    const t = document.querySelector(`.game-row[data-index="${sel}"]`);
+    if (t) nav.focus(t);
+  }
+}
+
+// Pressing a dangerous row twice: the first press arms it (and says what the second does).
+let armed = null;
+function confirmTwice(key, message) {
+  if (armed?.key === key && Date.now() - armed.at < 6000) {
+    armed = null;
+    return true;
+  }
+  armed = { key, at: Date.now() };
+  toast(message, true);
+  return false;
+}
+
+// Game settings for a game added by hand
+const setCustom = (id, key, value, msg) => act(() => api.call("custom_set", { id, key, value: String(value ?? "") }), msg);
+
+function renderCustomSheet() {
+  const g = game();
+  if (!g?.custom) return closeSheet();
+  $("#sheet-custom").querySelector("[data-custom-title]").textContent = g.title;
+  const keep = nav.current()?.dataset.key;
+  const toggle = (on) => `<span class="toggle${on ? " on" : ""}"></span>`;
+  const runnerName = g.runner ? (g.runner_pick ? g.runner.name : `Automatic (${g.runner.name})`) : "None found";
+  const protonish = g.runner && (g.runner.kind === "proton" || g.runner.kind === "umu");
+  const rows = $("#custom-rows");
+  const envRows = Object.entries(g.env || {}).map(
+    ([k, v]) => `<div class="mod-line">${rowHTML({ key: `envrow:${k}`, label: k, sub: v })}<button class="nav remove" data-key="envrm:${esc(k)}" aria-label="Remove ${esc(k)}"><svg viewBox="0 0 24 24"><use href="#i-x"/></svg></button></div>`
+  );
+  rows.innerHTML = [
+    `<p class="section-label">Game</p>`,
+    fieldHTML({ key: "c-title", label: "Title", value: g.title }),
+    rowHTML({ key: "exe", label: "Program", sub: g.exe || "Not chosen yet", value: g.exe ? "Change" : "Choose" }),
+    fieldHTML({ key: "c-args", label: "Launch arguments", placeholder: "Optional, e.g. -windowed -skipintro", value: g.args }),
+    `<div class="mod-line">${rowHTML({ key: "cwd", label: "Working folder", sub: g.cwd || "The program's own folder", value: "Change" })}${g.cwd ? `<button class="nav side" data-key="cwd-reset">Default</button>` : ""}</div>`,
+    `<p class="section-label">Pictures</p>`,
+    `<div class="mod-line">${rowHTML({ key: "icon", label: "Icon", sub: g.icon_url ? "From the program, or a picture you chose" : "None — choose a .png, .ico or .exe", value: "Change", extra: g.icon_url ? `<img class="cover-thumb" style="width:40px;height:40px" src="${esc(g.icon_url)}" alt="">` : "" })}${g.exe ? `<button class="nav side" data-key="icon-exe">From program</button>` : ""}</div>`,
+    `<div class="mod-line">${rowHTML({ key: "cover", label: "Cover", sub: g.cover ? "Shown in Beacon and Hearth's library" : "A portrait picture (600×900) for Beacon and Hearth", value: g.cover ? "Change" : "Choose" })}${g.cover ? `<button class="nav side" data-key="cover-clear">Clear</button>` : ""}</div>`,
+    `<div class="mod-line">${rowHTML({ key: "hero", label: "Background", sub: g.hero ? "Shown behind the game" : "A wide picture (1920×620)", value: g.hero ? "Change" : "Choose" })}${g.hero ? `<button class="nav side" data-key="hero-clear">Clear</button>` : ""}</div>`,
+    ...(snap.native
+      ? []
+      : [
+          `<p class="section-label">Compatibility</p>`,
+          rowHTML({ key: "runner", label: "Runner", sub: "Proton or Wine build for this game", value: runnerName, cycle: true }),
+          `<button class="nav row-btn" data-key="tools"><svg viewBox="0 0 24 24"><use href="#i-download"/></svg>Get more runners (Compatibility tools)</button>`,
+          `<div class="mod-line">${rowHTML({ key: "prefix", label: "Wine prefix", sub: g.wineprefix, value: "Change" })}${g.prefix ? `<button class="nav side" data-key="prefix-reset">Own</button>` : ""}</div>`,
+          ...(protonish
+            ? [
+                fieldHTML({ key: "c-gameid", label: "GAMEID (umu protonfixes)", placeholder: "e.g. umu-1091500 or a Steam app id — from umu's database", value: g.umu_id || "", help: "Lets umu apply the game's known fixes." }),
+                rowHTML({ key: "store", label: "STORE", sub: "Where the game is from, for protonfixes", value: g.store || "none", cycle: true }),
+              ]
+            : []),
+          `<p class="section-label">Graphics &amp; performance</p>`,
+          rowHTML({ key: "dxvk", label: "DXVK", sub: protonish ? "Direct3D 8–11 on Vulkan (off: Wine's OpenGL path)" : "Direct3D 8–11 on Vulkan — copied into the prefix from Compatibility tools", extra: toggle(!g.no_dxvk) }),
+          rowHTML({ key: "vkd3d", label: "VKD3D-Proton", sub: "Direct3D 12 on Vulkan", extra: toggle(!g.no_vkd3d) }),
+          rowHTML({ key: "mangohud", label: "MangoHud", sub: "Frame rate and system overlay", extra: toggle(g.mangohud) }),
+          rowHTML({ key: "gamemode", label: "GameMode", sub: "Feral's performance mode while the game runs", extra: toggle(g.gamemode) }),
+          rowHTML({ key: "gamescope", label: "gamescope", sub: "Runs the game in its own compositor (skipped inside Hearth's Game Mode, which is one)", extra: toggle(g.gamescope) }),
+          ...(g.gamescope ? [fieldHTML({ key: "c-gsargs", label: "gamescope options", placeholder: "-W 1920 -H 1080 -f", value: g.gamescope_args })] : []),
+          `<p class="section-label">Proton options</p>`,
+          ...(snap.flags || []).map(([k, label]) => rowHTML({ key: `flag:${k}`, label, extra: toggle((g.flags || []).includes(k)) })),
+        ]),
+    `<p class="section-label">Environment variables</p>`,
+    ...envRows,
+    fieldHTML({ key: "c-env", label: "Add a variable", placeholder: "KEY=VALUE, e.g. DXVK_HUD=fps", help: "Press Enter to add it." }),
+    `<p class="section-label">Tools</p>`,
+    ...(snap.native ? [] : [`<button class="nav row-btn" data-key="wine"><svg viewBox="0 0 24 24"><use href="#i-wine"/></svg>Wine tools: winecfg, winetricks, registry…</button>`]),
+    `<button class="nav row-btn" data-key="run"><svg viewBox="0 0 24 24"><use href="#i-plus"/></svg>${snap.native ? "Run another program" : "Run another program in this prefix"}</button>`,
+    ...(snap.native ? [] : [`<button class="nav row-btn" data-key="openpfx"><svg viewBox="0 0 24 24"><use href="#i-folder"/></svg>Open the Wine prefix</button>`]),
+    `<button class="nav row-btn" data-key="log"><svg viewBox="0 0 24 24"><use href="#i-scroll"/></svg>Open log</button>`,
+    `<p class="section-label">Remove</p>`,
+    rowHTML({ key: "remove", label: "Remove from Beacon", sub: "Keeps the game's files and its Wine prefix" }),
+    ...(!snap.native && (g.prefix_ready || g.own_prefix) ? [rowHTML({ key: "remove-pfx", label: "Remove and delete its Wine prefix", sub: g.wineprefix }).replace('class="nav row', 'class="nav row danger')] : []),
+    `<div class="cmd" id="custom-preview">…</div>`,
+  ].join("");
+
+  const on = (key, ev, fn) => rows.querySelector(`[data-key="${CSS.escape(key)}"]`)?.addEventListener(ev, fn);
+  const field = (key, apply) => {
+    const input = rows.querySelector(`#f-${key}`);
+    input?.addEventListener("change", () => apply(input.value));
+  };
+  const cycle = (key, fn) => {
+    on(key, "cycle", (e) => fn(e.detail));
+    on(key, "click", (e) => e.currentTarget.dispatchEvent(new CustomEvent("cycle", { detail: 1 })));
+  };
+  field("c-title", (v) => setCustom(g.cid, "title", v, "Title saved"));
+  field("c-args", (v) => setCustom(g.cid, "args", v, "Arguments saved"));
+  field("c-gameid", (v) => setCustom(g.cid, "umu-id", v.trim(), v.trim() ? "GAMEID saved" : "GAMEID cleared"));
+  field("c-gsargs", (v) => setCustom(g.cid, "gamescope-args", v, "gamescope options saved"));
+  field("c-env", async (v) => {
+    if (!v.includes("=")) return toast("Use KEY=VALUE", true);
+    await setCustom(g.cid, "env", v.trim(), "Variable added");
+  });
+  on("exe", "click", async () => {
+    const p = await api.call("pick_file", { kind: "game" });
+    if (p) setCustom(g.cid, "exe", p, "Program set");
+  });
+  on("cwd", "click", async () => {
+    const p = await api.call("pick_folder");
+    if (p) setCustom(g.cid, "cwd", p, "Working folder set");
+  });
+  on("cwd-reset", "click", () => setCustom(g.cid, "cwd", "", "Working folder: the program's own"));
+  const picture = (key, label) =>
+    on(key, "click", async () => {
+      const p = await api.call("pick_file", { kind: "image" });
+      if (p && (await setCustom(g.cid, key, p, `${label} set`))) {
+        delete artCache[g.cid];
+        await loadCustomArt(game()).catch(() => {});
+        render();
+      }
+    });
+  picture("icon", "Icon");
+  picture("cover", "Cover");
+  picture("hero", "Background");
+  on("icon-exe", "click", () => setCustom(g.cid, "icon", g.exe, "Icon taken from the program"));
+  for (const k of ["cover", "hero"])
+    on(`${k}-clear`, "click", async () => {
+      if (await setCustom(g.cid, k, "", "Picture cleared")) {
+        delete artCache[g.cid];
+        await loadCustomArt(game()).catch(() => {});
+        render();
+      }
+    });
+  cycle("runner", (d) => {
+    const ids = [null, ...snap.runners.map((r) => r.id)];
+    const cur = Math.max(0, ids.indexOf(g.runner_pick ?? null));
+    const next = ids[(cur + d + ids.length) % ids.length];
+    setCustom(g.cid, "runner", next ?? "auto");
+  });
+  on("tools", "click", openToolsSheet);
+  on("prefix", "click", async () => {
+    const p = await api.call("pick_folder");
+    if (p) setCustom(g.cid, "prefix", p, "Wine prefix set");
+  });
+  on("prefix-reset", "click", () => setCustom(g.cid, "prefix", "", "Using its own prefix in Beacon's data folder"));
+  cycle("store", (d) => {
+    const opts = snap.stores || ["none"];
+    const i = Math.max(0, opts.indexOf(g.store || "none"));
+    const next = opts[(i + d + opts.length) % opts.length];
+    setCustom(g.cid, "store", next === "none" ? "" : next);
+  });
+  on("dxvk", "click", () => setCustom(g.cid, "dxvk", g.no_dxvk ? "on" : "off"));
+  on("vkd3d", "click", () => setCustom(g.cid, "vkd3d", g.no_vkd3d ? "on" : "off"));
+  for (const k of ["mangohud", "gamemode", "gamescope"]) on(k, "click", () => setCustom(g.cid, k, g[k] ? "off" : "on"));
+  for (const [k] of snap.flags || []) on(`flag:${k}`, "click", () => setCustom(g.cid, "flag", `${(g.flags || []).includes(k) ? "-" : "+"}${k}`));
+  for (const k of Object.keys(g.env || {})) on(`envrm:${k}`, "click", () => setCustom(g.cid, "env", `${k}=`, `${k} removed`));
+  on("wine", "click", () => open("wine", $("#sheet-wine")));
+  on("run", "click", () => runInCustom(g));
+  on("openpfx", "click", () => act(() => api.call("open_path", { path: g.wineprefix })));
+  on("log", "click", () => (g.has_log ? act(() => api.call("open_path", { path: g.log_file })) : toast("No log yet — play the game first.", true)));
+  const remove = async (deletePrefix) => {
+    try {
+      const [next, msg] = await api.call("custom_remove", { id: g.cid, deletePrefix });
+      snap = next;
+      closeAllSheets();
+      sel = Math.min(sel, items().length - 1);
+      render();
+      toast(msg);
+    } catch (e) {
+      toast(String(e?.message ?? e), true);
+    }
+  };
+  on("remove", "click", () => confirmTwice("remove", `Press again to remove ${g.title} from Beacon (its files and prefix stay)`) && remove(false));
+  on("remove-pfx", "click", () => confirmTwice("remove-pfx", `Press again to remove ${g.title} AND delete its Wine prefix (saves inside it go too)`) && remove(true));
+  api
+    .call("custom_preview", { id: g.cid })
+    .then((t) => ($("#custom-preview").textContent = t))
+    .catch((e) => ($("#custom-preview").textContent = String(e?.message ?? e)));
+  nav.refocus(keep ? `[data-key="${CSS.escape(keep)}"]` : null);
+}
+
+async function runInCustom(g) {
+  const path = await api.call("pick_file", { kind: "game" });
+  if (path) act(() => api.call("custom_run", { id: g.cid, path }));
+}
+
+// Wine tools for a game's prefix
+function renderWineSheet() {
+  const g = game();
+  if (!g?.custom) return closeSheet();
+  $("#sheet-wine").querySelector("[data-custom-title]").textContent = g.title;
+  const rows = $("#wine-rows");
+  const subs = {
+    winecfg: "Windows version, drives, audio, graphics",
+    winetricks: "Install runtimes and fonts (vcrun, d3dx9, dotnet…)",
+    regedit: "The prefix's registry",
+    cmd: "A Windows command prompt",
+    taskmgr: "Programs running in the prefix",
+    explorer: "Browse the prefix's drive C:",
+    uninstaller: "Remove programs installed in the prefix",
+    control: "Windows control panel",
+    kill: "Close everything running in this prefix (a stuck game or installer)",
+  };
+  rows.innerHTML = snap.native
+    ? note("Windows runs games directly; there's no Wine prefix.")
+    : [
+        ...(snap.wine_tools || []).map(([k, label]) => rowHTML({ key: `tool:${k}`, label, sub: subs[k] || "", value: k === "kill" ? "Stop" : "Open" })),
+        `<p class="section-label">Programs</p>`,
+        `<button class="nav row-btn" data-key="run"><svg viewBox="0 0 24 24"><use href="#i-plus"/></svg>Run another program in this prefix (installer, patch, .msi)</button>`,
+        ...(g.installer ? [`<button class="nav row-btn" data-key="reinstall"><svg viewBox="0 0 24 24"><use href="#i-download"/></svg>Run the installer again</button>`] : []),
+        `<button class="nav row-btn" data-key="pick"><svg viewBox="0 0 24 24"><use href="#i-scan"/></svg>Find the game's program in the prefix</button>`,
+      ].join("");
+  for (const [k] of snap.wine_tools || []) rows.querySelector(`[data-key="tool:${k}"]`)?.addEventListener("click", () => act(() => api.call("custom_tool", { id: g.cid, tool: k })));
+  rows.querySelector('[data-key="run"]')?.addEventListener("click", () => runInCustom(g));
+  rows.querySelector('[data-key="reinstall"]')?.addEventListener("click", () => act(() => api.call("custom_run", { id: g.cid, path: g.installer })));
+  rows.querySelector('[data-key="pick"]')?.addEventListener("click", () => openPick(g));
+  nav.refocus();
+}
+
+// ---------------------------------------------------------------- compatibility tools (ProtonPlus-style)
+// Proton, Wine, DXVK and VKD3D-Proton builds from the projects' GitHub releases, for Beacon and the other
+// launchers on this PC.
+
+const tl = { target: "beacon", data: null, loading: false, tool: null, releases: null, busy: null, pct: null };
+
+async function openToolsSheet() {
+  open("tools", $("#sheet-tools"));
+  await loadTools(true);
+}
+
+async function loadTools(online) {
+  tl.loading = true;
+  render();
+  try {
+    tl.data = await api.call("tools_list", { target: tl.target, online });
+  } catch (e) {
+    toast(String(e?.message ?? e), true);
+  }
+  tl.loading = false;
+  render();
+}
+
+const targetName = (id) => tl.data?.targets?.find((t) => t.id === id)?.name ?? id;
+
+function renderToolsSheet() {
+  const rows = $("#tools-rows");
+  const keep = nav.current()?.dataset.key;
+  const d = tl.data;
+  const detected = (d?.targets || []).filter((t) => t.detected);
+  const kinds = { proton: "Proton", wine: "Wine", dxvk: "DXVK", vkd3d: "VKD3D", umu: "umu" };
+  const groups = [["proton", "Proton"], ["umu", "umu-launcher"], ["wine", "Wine"], ["dxvk", "Direct3D 8–11 (for Wine)"], ["vkd3d", "Direct3D 12 (for Wine)"]];
+  const toolRow = (t) => {
+    const inst = t.installed.map((i) => i.name + (i.latest ? " (Latest)" : ""));
+    const value = t.up_to_date ? "" : t.installed.length ? (t.newest ? `Update to ${t.newest}` : "Installed") : t.newest ? `Get ${t.newest}` : "Get";
+    return rowHTML({ key: `tool:${t.id}`, label: t.name, sub: inst.length ? inst.join(", ") : t.blurb, value, tick: t.up_to_date, badge: t.archived ? "No new releases" : kinds[t.kind] ?? "" });
+  };
+  rows.innerHTML = [
+    rowHTML({ key: "target", label: "Install for", sub: "Beacon itself, or another launcher on this PC", value: targetName(tl.target), cycle: detected.length > 1 }),
+    rowHTML({ key: "auto", label: "Keep “Latest” copies up to date", sub: "Checked each time Beacon opens", extra: `<span class="toggle${snap.tools_auto_update ? " on" : ""}"></span>` }),
+    `<button class="nav row-btn" data-key="update"><svg viewBox="0 0 24 24"><use href="#i-download"/></svg>Update “Latest” copies now</button>`,
+    tl.loading && !d ? note("Asking GitHub…") : "",
+    ...(d?.errors?.length ? [note(`Couldn't ask GitHub about everything: ${esc(d.errors[0])}`)] : []),
+    ...groups.flatMap(([k, label]) => {
+      const list = (d?.tools || []).filter((t) => t.kind === k && t.supported);
+      return list.length ? [`<p class="section-label">${label}</p>`, ...list.map(toolRow)] : [];
+    }),
+    note("Downloads come only from each project's own GitHub releases and are checked against the checksum the release publishes, when it has one. The list of tools follows ProtonPlus."),
+  ].join("");
+  const on = (key, ev, fn) => rows.querySelector(`[data-key="${CSS.escape(key)}"]`)?.addEventListener(ev, fn);
+  on("target", "cycle", (e) => {
+    if (detected.length < 2) return;
+    const i = Math.max(0, detected.findIndex((t) => t.id === tl.target));
+    tl.target = detected[(i + e.detail + detected.length) % detected.length].id;
+    loadTools(false);
+  });
+  on("target", "click", (e) => e.currentTarget.dispatchEvent(new CustomEvent("cycle", { detail: 1 })));
+  on("auto", "click", () => act(() => api.call("set_tools_auto", { on: !snap.tools_auto_update })));
+  on("update", "click", () => toolsJob("Updating “Latest” copies…", () => api.call("tools_update")));
+  for (const t of d?.tools || []) on(`tool:${t.id}`, "click", () => openTool(t.id));
+  nav.refocus(keep ? `[data-key="${CSS.escape(keep)}"]` : null);
+}
+
+async function openTool(id) {
+  tl.tool = id;
+  tl.releases = null;
+  open("tool", $("#sheet-tool"));
+  try {
+    tl.releases = await api.call("tools_releases", { tool: id });
+  } catch (e) {
+    tl.releases = [];
+    toast(String(e?.message ?? e), true);
+  }
+  render();
+}
+
+function renderToolSheet() {
+  const t = tl.data?.tools?.find((x) => x.id === tl.tool);
+  if (!t) return closeSheet();
+  $("#tool-name").textContent = t.name;
+  $("#tool-target").textContent = `For ${targetName(tl.target)}`;
+  const keep = nav.current()?.dataset.key;
+  const rows = $("#tool-rows");
+  const latest = t.installed.find((i) => i.latest);
+  const has = (tag) => t.installed.some((i) => (i.tag ? i.tag === tag : i.name.toLowerCase().replace(/[^a-z0-9]/g, "").includes(tag.toLowerCase().replace(/^v/, "").replace(/^cachyos/, "").replace(/[^a-z0-9]/g, ""))));
+  rows.innerHTML = [
+    note(esc(t.blurb) + (t.archived ? " Its project makes no new releases; the last one still installs." : "")),
+    rowHTML({ key: "latest", label: `${t.name} Latest`, sub: latest ? `On ${latest.tag || latest.name} — kept on the newest release` : "One copy that Beacon keeps on the newest release", value: latest ? (t.up_to_date ? "" : "Update") : "Install", tick: !!latest && t.up_to_date }),
+    ...(t.installed.length
+      ? [
+          `<p class="section-label">Installed</p>`,
+          ...t.installed.map(
+            (i) => `<div class="mod-line">${rowHTML({ key: `inst:${i.name}`, label: i.name, sub: i.by_beacon ? `Installed by Beacon${i.latest ? " · Latest" : ""}` : "Installed outside Beacon" })}<button class="nav remove" data-key="rm:${esc(i.name)}" aria-label="Remove ${esc(i.name)}"><svg viewBox="0 0 24 24"><use href="#i-trash"/></svg></button></div>`
+          ),
+        ]
+      : []),
+    `<p class="section-label">Releases</p>`,
+    tl.releases == null ? note("Asking GitHub…") : !tl.releases.length ? note("No releases with a Linux build found.") : "",
+    ...(tl.releases || []).slice(0, 30).map((r) => rowHTML({ key: `rel:${r.tag}`, label: r.tag, sub: [r.published?.slice(0, 10), fmtSize(r.size), r.checksum_url ? "checksum published" : "", r.prerelease ? "pre-release" : ""].filter(Boolean).join(" · "), value: has(r.tag) ? "" : "Install", tick: has(r.tag) })),
+  ].join("");
+  const on = (key, fn) => rows.querySelector(`[data-key="${CSS.escape(key)}"]`)?.addEventListener("click", fn);
+  on("latest", () => toolsJob(`Installing ${t.name} Latest…`, () => api.call("tools_install", { tool: t.id, target: tl.target, version: "latest" })));
+  for (const r of tl.releases || []) on(`rel:${r.tag}`, () => !has(r.tag) && toolsJob(`Installing ${t.name} ${r.tag}…`, () => api.call("tools_install", { tool: t.id, target: tl.target, version: r.tag })));
+  for (const i of t.installed)
+    on(`rm:${i.name}`, async () => {
+      if (!confirmTwice(`rm:${i.name}`, `Press again to delete ${i.name} from ${targetName(tl.target)}`)) return;
+      if (await act(() => api.call("tools_remove", { tool: t.id, target: tl.target, name: i.name }), `Removed ${i.name}`)) await loadTools(false);
+    });
+  nav.refocus(keep ? `[data-key="${CSS.escape(keep)}"]` : null);
+}
+
+async function toolsJob(title, fn) {
+  if (tl.busy) return;
+  tl.busy = title;
+  showOverlay({ title, text: "Asking GitHub for the release" });
+  try {
+    const [next, msg] = await fn();
+    snap = next;
+    hideOverlay();
+    await loadTools(false);
+    toast(msg);
+  } catch (e) {
+    showOverlay({ title: "That didn't work", text: String(e?.message ?? e), error: true, ok: true });
+  }
+  tl.busy = null;
+}
+
+function onToolsProgress({ pct, text }) {
+  if (!tl.busy || $("#overlay").hidden) return;
+  $("#overlay-text").textContent = pct == null ? text : `${text} (${pct}%)`;
+}
+
 // ---------------------------------------------------------------- wiring
 
 nav.onBack(() => {
@@ -1439,11 +2056,11 @@ nav.onShortcut((b) => {
     const row = document.querySelector(`.game-row[data-index="${sel}"]`);
     if (nav.current()?.classList.contains("game-row")) nav.focus(row);
   } else if (b === "x") {
-    if (openSheet === "game") closeSheet();
+    if (openSheet === "game" || openSheet === "custom" || openSheet === "add") closeSheet();
     else if (!openSheet) openGameSheet();
   } else if (b === "y") {
-    if (openSheet === "mods") closeSheet();
-    else if (!openSheet) loadMods(game().id).then(() => open("mods", $("#sheet-mods")));
+    if (openSheet === "mods" || openSheet === "wine") closeSheet();
+    else if (!openSheet) openModsSheet();
   } else if (b === "start" && !openSheet) play();
   else if (b === "select") {
     if (openSheet === "launcher") closeSheet();
@@ -1454,8 +2071,19 @@ nav.onShortcut((b) => {
 nav.onInputChange(renderHints);
 
 $("#btn-play").addEventListener("click", play);
-$("#btn-mods").addEventListener("click", () => loadMods(game().id).then(() => open("mods", $("#sheet-mods"))));
-const openGameSheet = () => loadCommunity(game().id).catch(() => {}).then(() => open("game", $("#sheet-game")));
+function openModsSheet() {
+  const g = game();
+  if (g.add) return;
+  if (g.custom) return open("wine", $("#sheet-wine"));
+  loadMods(g.id).then(() => open("mods", $("#sheet-mods")));
+}
+$("#btn-mods").addEventListener("click", openModsSheet);
+const openGameSheet = () => {
+  const g = game();
+  if (g.add) return open("add", $("#sheet-add"));
+  if (g.custom) return open("custom", $("#sheet-custom"));
+  return loadCommunity(g.id).catch(() => {}).then(() => open("game", $("#sheet-game")));
+};
 $("#btn-game-settings").addEventListener("click", openGameSheet);
 $("#btn-launcher-settings").addEventListener("click", openLauncherSheet);
 $("#btn-downloads").addEventListener("click", openDownloads);
@@ -1502,7 +2130,7 @@ function tick() {
 (async function init() {
   snap = await api.call("get_state");
   // Start on the first installed game.
-  sel = Math.max(0, snap.games.findIndex((g) => g.installed));
+  sel = Math.max(0, items().findIndex((g) => g.installed && !g.add));
   buildShelf();
   renderHints(false);
   render();
@@ -1539,6 +2167,10 @@ function tick() {
   });
   dlInfo = await api.call("downloads_info").catch(() => null);
   api.on("community-launcher-closed", (e) => onCommunityLauncherClosed(e).catch(() => {}));
+  api.on("custom-event", (e) => onCustomEvent(e).catch(() => {}));
+  api.on("custom-install-done", onInstallDone);
+  api.on("tools-progress", onToolsProgress);
+  api.on("tools-updated", (n) => api.call("get_state").then((s) => { snap = s; render(); toast(`Updated ${n} compatibility tool${n > 1 ? "s" : ""}`); }).catch(() => {}));
   tick();
   setInterval(tick, 15000);
 })();
