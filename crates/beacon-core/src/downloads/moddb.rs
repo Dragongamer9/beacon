@@ -1,4 +1,4 @@
-//! **Private build only.** Downloading from ModDB without a browser.
+//! Downloading from ModDB without a browser.
 //!
 //! ModDB's pages chain like this:
 //! * a mod or game page (`/mods/<slug>`) → its downloads list (`…/downloads`),

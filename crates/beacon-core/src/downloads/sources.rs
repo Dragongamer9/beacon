@@ -235,7 +235,12 @@ impl SourceList {
 
 // ---------------------------------------------------------------- where things live
 
-/// Private-build settings (`<config dir>/private.json`).
+/// Where Beacon updates itself and `sources.json` from.
+pub const DEFAULT_REPO: &str = "Dragongamer9/beacon";
+/// The old private repo; installs still pointing there move to [`DEFAULT_REPO`].
+const OLD_PRIVATE_REPO: &str = "Dragongamer9/beacon-private";
+
+/// Download settings (`<config dir>/private.json`; the name is kept so existing settings carry over).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PrivateSettings {
@@ -251,7 +256,7 @@ pub struct PrivateSettings {
 
 impl Default for PrivateSettings {
     fn default() -> Self {
-        PrivateSettings { sources_repo: "Dragongamer9/beacon-private".into(), sources_branch: "main".into(), github_token: None, games_dir: None }
+        PrivateSettings { sources_repo: DEFAULT_REPO.into(), sources_branch: "main".into(), github_token: None, games_dir: None }
     }
 }
 
@@ -280,7 +285,12 @@ impl Store {
     }
 
     pub fn settings(&self) -> PrivateSettings {
-        std::fs::read_to_string(&self.settings_file).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+        let mut s: PrivateSettings =
+            std::fs::read_to_string(&self.settings_file).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+        if s.sources_repo.eq_ignore_ascii_case(OLD_PRIVATE_REPO) {
+            s.sources_repo = DEFAULT_REPO.into();
+        }
+        s
     }
 
     pub fn save_settings(&self, s: &PrivateSettings) -> Result<()> {
@@ -931,7 +941,7 @@ mod tests {
         assert_eq!(store.list(), SourceList::bundled());
         let mut newer: Value = serde_json::from_str(BUNDLED).unwrap();
         newer["version"] = json!(SourceList::bundled().version + 5);
-        let net = FakeNet::with(&[("https://raw.githubusercontent.com/Dragongamer9/beacon-private/main/sources.json", newer.to_string().as_bytes())]);
+        let net = FakeNet::with(&[("https://raw.githubusercontent.com/Dragongamer9/beacon/main/sources.json", newer.to_string().as_bytes())]);
         let u = store.update(&net, true).unwrap();
         assert_eq!(u.to, SourceList::bundled().version + 5);
         assert_eq!(store.list().version, u.to);
@@ -944,6 +954,9 @@ mod tests {
         assert_eq!(s.sources_repo, "a/b");
         store.save_settings(&s).unwrap();
         assert!(!std::fs::read_to_string(&store.settings_file).unwrap().contains("ghp_old"));
+        // Installs still pointing at the old private repo move to the public one.
+        std::fs::write(&store.settings_file, r#"{"sources_repo": "Dragongamer9/beacon-private"}"#).unwrap();
+        assert_eq!(store.settings().sources_repo, DEFAULT_REPO);
     }
 
     #[test]

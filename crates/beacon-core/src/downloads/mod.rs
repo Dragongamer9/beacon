@@ -1,4 +1,4 @@
-//! **Private build only.** Beacon's own download engine: the base games from
+//! Beacon's own download engine: the base games from
 //! the BFME Foundation's CDN (the same packages the All-in-One launcher
 //! installs), and later mods and other games, all resolved through
 //! `sources.json` so a moved link is found again instead of breaking.

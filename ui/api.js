@@ -81,7 +81,7 @@ function mockApi() {
     rol: { editions: [], steps: [step("patch", "Latest official patch", "From Rise of Legends Heaven.", "installer"), step("crash-fix", "Long-game crash fix", "Community fix for long sessions.", "merge"), step("user-patch", "User Patch Project", "Community patch in progress.", "link")] },
   };
   const snap = () => structuredClone(state);
-  // Download jobs (private build), like the Rust side: downloads-changed on every change.
+  // Download jobs, like the Rust side: downloads-changed on every change.
   const jobs = [];
   let jobId = 0;
   const pausedJobs = new Set();
@@ -105,7 +105,7 @@ function mockApi() {
     Object.assign(job, { state: "done", pct: 100, message, ended: Date.now() / 1000 });
     emit("downloads-changed", structuredClone(job));
   };
-  const dl = { version: 1, built_in: true, sources_repo: "Dragongamer9/beacon-private", games_dir: "/home/you/.local/share/beacon/games", custom_games_dir: false, learned_api: null, checks: null, games: ["bfme1", "bfme2", "rotwk", "rol"], launchers: ["uaw"], archive_launchers: {} };
+  const dl = { version: 1, built_in: true, sources_repo: "Dragongamer9/beacon", games_dir: "/home/you/.local/share/beacon/games", custom_games_dir: false, learned_api: null, checks: null, games: ["bfme1", "bfme2", "rotwk", "rol"], launchers: ["uaw"], archive_launchers: {} };
   const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
   const handlers = {
@@ -229,7 +229,7 @@ function mockApi() {
       setTimeout(() => emit("community-launcher-closed", { game: g, found: false }), 5000);
       return snap();
     },
-    // Private build: downloads.
+    // downloads.
     downloads_info: () => structuredClone(dl),
     downloads_list: () => structuredClone(jobs),
     download_pause: ({ id }) => { pausedJobs.add(id); },

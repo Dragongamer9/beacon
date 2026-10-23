@@ -1,4 +1,4 @@
-//! **Private build only.** Community launchers (Universe at War's) downloaded
+//! Community launchers (Universe at War's) downloaded
 //! through `sources.json`: the newest launcher in the community's Google Drive
 //! folder, looked up at download time. Beacon then uses it exactly like one
 //! you picked yourself (`set_community_launcher`: the .exe copied or the .zip

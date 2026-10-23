@@ -1,4 +1,4 @@
-//! **Private build only.** Beacon updates itself from a public GitHub repo's
+//! Beacon updates itself from a public GitHub repo's
 //! releases (the updates repo in `private.json`), no login.
 //!
 //! * **Check:** `releases/latest`, compared with this build's version.

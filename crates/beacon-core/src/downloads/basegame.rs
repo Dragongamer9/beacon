@@ -1,4 +1,4 @@
-//! **Private build only.** BFME, BFME II and RotWK straight from the BFME
+//! BFME, BFME II and RotWK straight from the BFME
 //! Foundation's CDN: the same base packages (`original-BFME1`,
 //! `original-BFME2`, `original-RotWK`) the All-in-One launcher installs,
 //! fetched natively instead of through the launcher.

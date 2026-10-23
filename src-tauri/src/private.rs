@@ -1,4 +1,4 @@
-//! Private build: downloads in the app. BFME, BFME II and RotWK from the BFME
+//! downloads in the app. BFME, BFME II and RotWK from the BFME
 //! Foundation's CDN (`cdn_get`), and the download sources (check, update,
 //! games folder). Progress arrives as `cdn-progress` events; the
 //! start-up check of the sources as `sources-checked`.

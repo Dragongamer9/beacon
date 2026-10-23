@@ -13,7 +13,7 @@ Game Mode.
 
 Beacon runs the games directly. It does not wrap the Windows All-in-One launcher (it finds the games that launcher installed, see [below](#bfme-all-in-one-launcher)). On Linux each game gets its own Wine/Proton prefix, holding the registry keys the original installer used to write; on Windows the games run as they are (see [Windows](#windows)). Beacon also sets your resolution and manages mods, including fan content from the [BFME workshop](#workshop).
 
-> Beacon doesn't include or download the games. Use your own discs, disc images or install files (see [Install from your own copy](#install-from-your-own-copy)) and your own CD key.
+> **Downloads built in.** Beacon can download BFME, BFME II and RotWK from the BFME Foundation's CDN, Rise of Legends, the Universe at War community launcher, and mods from ModDB, all inside the app, with a Downloads menu and links that fix themselves when a site moves things. It also updates itself. See [DOWNLOADS.md](DOWNLOADS.md). You can still use your own discs, disc images or install files (see [Install from your own copy](#install-from-your-own-copy)).
 
 ## What it does
 
@@ -124,8 +124,8 @@ launcher alone.
 
 The Universe at War community has a launcher that downloads the game. It's distributed only from
 [a Google Drive folder](https://drive.google.com/drive/folders/167UET84ZWXrMd9zpxEYiQWTQZexCGZfT) with several versions,
-no stable direct-download link and no checksums, so **Beacon never downloads it** (nor the game). On UaW's page and in
-Launcher settings:
+no stable direct-download link and no checksums. **Download the UaW launcher** gets the newest one from that folder
+for you (see [DOWNLOADS.md](DOWNLOADS.md)). Or, on UaW's page and in Launcher settings:
 
 - **Get the UaW launcher** opens that folder in your browser. Download the launcher version you want, then choose it
   below. Games are downloaded inside it; Beacon finds them afterwards.

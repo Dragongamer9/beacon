@@ -1,4 +1,4 @@
-//! **Private build only.** A game delivered as one archive (Rise of Legends'
+//! A game delivered as one archive (Rise of Legends'
 //! Google Drive zip). Beacon downloads it, extracts it, and looks at what's
 //! inside:
 //!

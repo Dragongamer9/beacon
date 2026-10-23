@@ -18,7 +18,7 @@ use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
-/// Private build: downloads.
+/// Downloads.
 mod private;
 
 struct AppState {
@@ -715,7 +715,7 @@ async fn uninstall(app: AppHandle, game: GameId, delete_files: bool, remove_pref
 fn main() {
     #[cfg(unix)]
     run_cli_if_asked();
-    // Private build: remove what a self-update left behind.
+    // Remove what a self-update left behind.
     beacon_core::downloads::selfupdate::cleanup_old();
 
     let mut beacon = Beacon::load().expect("loading Beacon config");

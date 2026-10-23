@@ -1,7 +1,6 @@
-# Beacon (private build)
+# Beacon's downloads
 
-This repo is a private fork of [Dragongamer9/beacon](https://github.com/Dragongamer9/beacon). Its only addition is
-Beacon's own downloads. Don't publish its builds.
+Beacon downloads games, launchers and mods itself, and updates itself. This page covers how that works.
 
 ## What it adds
 
@@ -39,15 +38,14 @@ Beacon's own downloads. Don't publish its builds.
   - **Pause** stops a download and keeps the partial file; **Resume** carries on from there.
   - A failed download gets **Try again**. A download whose link changed waits for **Use what Beacon found**.
   - **Kept downloads** shows the space taken by partial downloads and kept setups. **Clear kept downloads** frees it.
-- **Reinstall downloads it again.** Game settings → Uninstall or reinstall works as in public Beacon. In this build,
-  **Reinstall** for a game Beacon can download (BFME, BFME II, RotWK, Rise of Legends) deletes its files, keeps saves
+- **Reinstall downloads it again.** Game settings → Uninstall or reinstall works as described in the README. **Reinstall** for a game Beacon can download (BFME, BFME II, RotWK, Rise of Legends) deletes its files, keeps saves
   and settings, and downloads it again straight away, with progress in Downloads.
 - **.7z and .rar too.** Launchers and game archives can be .zip, .7z or .rar, both for downloads and for "Use a
   launcher you downloaded". They're extracted with bsdtar, 7-Zip, or unrar/unar for RAR files that the others can't
   open.
 - **Updates itself.** Launcher settings → About → **Check for updates** (also checked on start-up, or run
   `beacon self-update`) looks at the newest release of the *updates repo*. That's a public GitHub repo, no login,
-  `Dragongamer9/beacon-private` unless you change it in Launcher settings → Downloads or with
+  `Dragongamer9/beacon` unless you change it in Launcher settings → Downloads or with
   `beacon sources repo owner/repo`. The download is checked against the release's `SHA256SUMS` before anything is
   replaced. How it installs depends on how Beacon was installed:
   - AppImage: the file is replaced, and Beacon restarts.
@@ -75,14 +73,14 @@ Beacon's own downloads. Don't publish its builds.
 - **Fixes without rebuilding.** Beacon fetches `sources.json` from the updates repo (public, no login), at most
   every 6 hours and on demand. The
   higher `version` wins over the copy built in. So when a site changes in a way the scanner can't follow, edit
-  `sources.json` here, bump `version`, and push. Every install of this build picks it up.
+  `sources.json` here, bump `version`, and push. Every install picks it up.
 - **Check sources** (on start-up, in Launcher settings, or `beacon sources check`) looks up every source and touches
   its file. A broken link shows up before you need it.
 
 ## Setting it up
 
-1. **Updates repo:** Beacon reads its updates and `sources.json` from a public repo, `Dragongamer9/beacon-private` by
-   default, so that repo has to be public for updates to work. To use another repo, set it in Launcher settings →
+1. **Updates repo:** Beacon reads its updates and `sources.json` from a public repo, `Dragongamer9/beacon` by
+   default. To use another repo, set it in Launcher settings →
    Downloads → "Updates come from", or run `beacon sources repo owner/repo`. GitHub allows about 60 checks an hour
    without a login, which is plenty.
 2. **Games folder** (optional): the default is `~/.local/share/beacon/games/<BFME1|BFME2|RotWK>`. Change it in
@@ -107,23 +105,3 @@ beacon sources update            # fetch sources.json from the updates repo now
 beacon sources repo <owner/repo> # the public repo updates come from
 beacon sources games-dir <path|default>
 ```
-
-## Keeping up with public Beacon
-
-```sh
-git fetch upstream
-git merge upstream/main          # private code lives in new files, so conflicts stay small
-```
-
-Private code lives in:
-- `crates/beacon-core/src/downloads/`
-- `crates/beacon-cli/src/private.rs`
-- `src-tauri/src/private.rs`
-- `sources.json`
-- the "private build" block in `ui/app.js` and the mock handlers in `ui/api.js`
-
-The rest of the tree only gets small hooks:
-- `pub mod downloads` and a games-folder scan root in `lib.rs`
-- two subcommands in the CLI
-- six commands and a start-up check in the app
-- a few rows in the game and launcher sheets

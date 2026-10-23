@@ -308,7 +308,7 @@ async function openCatalog() {
   modDownloads[game().id] = await api.call("mod_downloads", { game: game().id }).catch(() => []);
   open("catalog", $("#sheet-catalog"));
 }
-const modDownloads = {}; // game id → [{id, title, catalog_id}] (private build)
+const modDownloads = {}; // game id → [{id, title, catalog_id}]
 
 function renderCatalogSheet() {
   const g = game();
@@ -533,7 +533,7 @@ function renderGameSheet() {
       : []),
     ...(!aotr && !g.installed
       ? [
-          // Private build: Beacon downloads the BFME games itself, from the BFME Foundation's CDN.
+          // Beacon downloads the BFME games itself, from the BFME Foundation's CDN.
           ...(dlInfo?.games?.includes(g.id) ? cdnRows(g) : []),
           // Or the BFME Foundation's launcher downloads them, Beacon finds them.
           ...(WORKSHOP_GAMES.includes(g.id) ? aioRows() : []),
@@ -949,7 +949,7 @@ async function openUninstall(g) {
   open("uninstall", $("#sheet-uninstall"));
 }
 
-// How a game gets back after a reinstall: hook for builds that can download it (see the private build).
+// How a game gets back after a reinstall: hook for builds that can download it (downloads).
 const reinstallers = [];
 
 function renderUninstallSheet() {
@@ -1020,7 +1020,7 @@ function showOverlay({ title, text, error = false, ok = false }) {
 function hideOverlay() {
   if ($("#overlay").hidden) return;
   overlayState = null;
-  // A mod download that wasn't confirmed is dropped (private build).
+  // A mod download that wasn't confirmed is dropped.
   modPending = null;
   $("#overlay-ok").textContent = "OK";
   nav.popLayer();
@@ -1056,7 +1056,7 @@ async function onGameEvent({ game: id, phase, message }) {
   render();
 }
 
-// ---------------------------------------------------------------- private build: downloads
+// ---------------------------------------------------------------- downloads
 // BFME, BFME II and RotWK straight from the BFME Foundation's CDN (the packages the All-in-One launcher installs),
 // resolved through sources.json so a moved link is found again. RotWK brings BFME II along when it's missing.
 
@@ -1118,7 +1118,7 @@ function downloadsRows() {
   const bad = checks.filter((c) => c.state === "broken" || c.state === "needs-confirm");
   const summary = !checks.length ? "Not checked yet" : bad.length ? `${bad.length} of ${checks.length} need a look` : `All ${checks.length} working`;
   return [
-    `<p class="section-label">Downloads (private build)</p>`,
+    `<p class="section-label">Downloads</p>`,
     rowHTML({ key: "src-check", label: "Check download sources", sub: `${summary} · also runs when Beacon starts`, value: "Check" }),
     ...checks.map(
       (c) =>
@@ -1186,7 +1186,7 @@ function wireDownloads(on, rows) {
   on("games-dir-default", "click", () => setDir(null));
 }
 
-// Private build: the newest community launcher (UaW's) straight from its Google Drive folder.
+// the newest community launcher (UaW's) straight from its Google Drive folder.
 const clGuess = {}; // game id → note, when the folder only turned up a guess
 
 function launcherDownloadRows(g) {
@@ -1208,7 +1208,7 @@ async function launcherGet(g) {
   return runDownload("launcher_get", { game: g.id, force: false, acceptGuess: !!clGuess[g.id] }, g, `${g.short} launcher`);
 }
 
-// Private build: Beacon updates itself from the private repo's releases.
+// Beacon updates itself from the repo's releases.
 let appUpd = null; // last update check
 let appUpdBusy = false;
 
@@ -1250,7 +1250,7 @@ async function appUpdate() {
   appUpdBusy = false;
 }
 
-// Private build: mods downloaded inside Beacon. Look the file up, say what it is, then download and
+// mods downloaded inside Beacon. Look the file up, say what it is, then download and
 // install it where it belongs for the game (its mods, its folder, or its setup run in its prefix).
 const dlFor = (g, it) => (modDownloads[g.id] || []).find((d) => d.catalog_id === it.id);
 let modBusy = false;
@@ -1280,7 +1280,7 @@ async function modInstall() {
   return runDownload("mod_install", { found }, g, found.name);
 }
 
-// ---------------------------------------------------------------- downloads menu (private build)
+// ---------------------------------------------------------------- downloads menu
 // Every download runs in the background as a job; the Downloads menu shows them all with their progress,
 // and can pause (the partial file stays), resume, retry or remove them.
 const jobs = new Map(); // id → job (from downloads_list and downloads-changed)

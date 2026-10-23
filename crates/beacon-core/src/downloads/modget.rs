@@ -1,4 +1,4 @@
-//! **Private build only.** Mods and patches downloaded inside Beacon, no
+//! Mods and patches downloaded inside Beacon, no
 //! browser: from a `sources.json` mod source (the catalog's Download button)
 //! or any ModDB link you paste.
 //!
