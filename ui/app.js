@@ -212,6 +212,7 @@ function render() {
   if (openSheet === "workshop") renderWorkshopSheet();
   if (openSheet === "game") renderGameSheet();
   if (openSheet === "launcher") renderLauncherSheet();
+  if (openSheet === "uninstall") renderUninstallSheet();
 }
 
 // ---------------------------------------------------------------- actions
@@ -569,6 +570,7 @@ function renderGameSheet() {
     `<button class="nav row-btn" data-key="installer"><svg viewBox="0 0 24 24"><use href="#i-plus"/></svg>${snap.native ? "Run a patch or installer for this game" : "Run a patch or installer in this game's prefix"}</button>`,
     `<button class="nav row-btn" data-key="log"><svg viewBox="0 0 24 24"><use href="#i-scroll"/></svg>Open log</button>`,
     `<button class="nav row-btn" data-key="openfolder"><svg viewBox="0 0 24 24"><use href="#i-open"/></svg>Open game folder</button>`,
+    ...(g.installed ? [`<button class="nav row-btn danger" data-key="uninstall"><svg viewBox="0 0 24 24"><use href="#i-x"/></svg>Uninstall or reinstall ${esc(g.short)}…</button>`] : []),
     `<div class="cmd" id="cmd-preview">…</div>`,
   ].filter(Boolean).join("");
 
@@ -628,6 +630,7 @@ function renderGameSheet() {
   on("installer", "click", () => runInstaller(g));
   on("log", "click", () => act(() => api.call("open_log", { game: g.id })));
   on("openfolder", "click", () => g.path && act(() => api.call("open_path", { path: g.path })));
+  on("uninstall", "click", () => openUninstall(g));
 
   api
     .call("launch_preview", { game: g.id, modId: null })
@@ -898,6 +901,78 @@ function closeSheet() {
   openSheet = sheets.at(-1) ?? null;
   nav.popLayer();
   render();
+}
+
+// ---------------------------------------------------------------- uninstall / reinstall
+// The plan comes first (what would go, how big, whether Beacon will delete it); nothing happens until
+// "Uninstall" or "Reinstall". Saves and settings in the game's prefix stay unless asked.
+let unPlan = null;
+const unOpts = { files: true, prefix: false };
+
+async function openUninstall(g) {
+  try {
+    unPlan = await api.call("uninstall_plan", { game: g.id });
+  } catch (e) {
+    return toast(String(e?.message ?? e), true);
+  }
+  Object.assign(unOpts, { files: unPlan.can_delete, prefix: false });
+  open("uninstall", $("#sheet-uninstall"));
+}
+
+// How a game gets back after a reinstall: hook for builds that can download it (see the private build).
+const reinstallers = [];
+
+function renderUninstallSheet() {
+  const g = game();
+  const p = unPlan;
+  if (!p || p.game !== g.id) return closeSheet();
+  const sheet = $("#sheet-uninstall");
+  sheet.querySelector("[data-game-short]").textContent = g.title;
+  const keep = nav.current()?.dataset.key;
+  const size = (n) => (n ? fmtSize(n) : "empty");
+  const rows = $("#uninstall-rows");
+  rows.innerHTML = [
+    `<div class="row" style="cursor:default"><span style="min-width:0"><span class="label">Game folder</span><span class="sub">${esc(p.dir ?? "Not set")}</span></span><span class="value">${p.dir ? size(p.bytes) : ""}</span></div>`,
+    p.why_not ? `<p class="section-label" style="text-transform:none;letter-spacing:0;font-weight:400">Beacon won't delete these files: ${esc(p.why_not)}.</p>` : "",
+    p.needed_by.length ? `<p class="section-label" style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--danger)">${esc(p.needed_by.map((x) => snap.games.find((y) => y.id === x)?.short ?? x).join(", "))} needs ${esc(g.short)} to run.</p>` : "",
+    `<p class="section-label">What to remove</p>`,
+    p.can_delete ? rowHTML({ key: "un-files", label: "Delete the game's files", sub: `Frees ${size(p.bytes)}. Off: ${g.short} only leaves Beacon, its files stay.`, extra: `<span class="toggle${unOpts.files ? " on" : ""}"></span>` }) : "",
+    p.prefix ? rowHTML({ key: "un-prefix", label: "Also delete saves and settings", sub: `${g.short}'s Wine prefix · ${size(p.prefix_bytes)}${p.inside_prefix ? " · the game is installed inside it" : ""}. Off: kept for when you reinstall.`, extra: `<span class="toggle${unOpts.prefix ? " on" : ""}"></span>` }) : "",
+    `<p class="section-label">Do it</p>`,
+    rowHTML({ key: "un-go", label: unOpts.files || unOpts.prefix ? `Uninstall ${g.short}` : `Remove ${g.short} from Beacon`, sub: unOpts.files || unOpts.prefix ? "Can't be undone" : "Its files stay where they are; Find games brings it back", value: "Uninstall" }),
+    p.can_delete ? rowHTML({ key: "un-reinstall", label: `Reinstall ${g.short}`, sub: reinstallers.some((r) => r.can(g)) ? "Deletes the game's files (saves and settings stay), then downloads it again" : "Deletes the game's files (saves and settings stay), then you install it again from your copy", value: "Reinstall" }) : "",
+    p.uninstaller ? rowHTML({ key: "un-own", label: "Run the game's own uninstaller", sub: p.uninstaller, value: "Run" }) : "",
+    p.steam ? `<p class="section-label" style="text-transform:none;letter-spacing:0;font-weight:400">This is a Steam copy: uninstall it in Steam (Library → ${esc(g.short)} → Manage → Uninstall).</p>` : "",
+  ].filter(Boolean).join("");
+  const on = (key, fn) => rows.querySelector(`[data-key="${key}"]`)?.addEventListener("click", fn);
+  on("un-files", () => { unOpts.files = !unOpts.files; renderUninstallSheet(); });
+  on("un-prefix", () => { unOpts.prefix = !unOpts.prefix; renderUninstallSheet(); });
+  on("un-go", () => doUninstall(g, unOpts.files, unOpts.prefix, false));
+  on("un-reinstall", () => doUninstall(g, true, false, true));
+  on("un-own", () => {
+    closeAllSheets();
+    runInstaller(g, p.uninstaller);
+  });
+  nav.refocus(keep ? `[data-key="${CSS.escape(keep)}"]` : null);
+}
+
+async function doUninstall(g, files, prefix, reinstall) {
+  try {
+    const [next, msg] = await api.call("uninstall", { game: g.id, deleteFiles: files, removePrefix: prefix });
+    snap = next;
+    unPlan = null;
+    closeAllSheets();
+    render();
+    toast(msg);
+    if (reinstall) {
+      const r = reinstallers.find((x) => x.can(g));
+      if (r) return r.run(g);
+      openGameSheet();
+      toast(`Now install ${g.short} again: pick its installer or disc under Install`);
+    }
+  } catch (e) {
+    toast(String(e?.message ?? e), true);
+  }
 }
 
 // ---------------------------------------------------------------- launch overlay

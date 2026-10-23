@@ -28,6 +28,7 @@ pub mod options_ini;
 pub mod registry;
 pub mod report;
 pub mod runner;
+pub mod uninstall;
 pub mod workshop;
 
 use anyhow::{anyhow, bail, Context, Result};

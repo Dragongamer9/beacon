@@ -28,6 +28,19 @@ Beacon runs the games directly. It does not wrap the Windows All-in-One launcher
 - **Runs patches and installers inside a game's prefix,** so community patches and mod installers see the game.
 - **Logs** each game to `~/.local/share/beacon/logs/<game>.log`.
 
+## Uninstall and reinstall
+
+Game settings → **Uninstall or reinstall** (or `beacon uninstall <game>`) shows what would go before anything does:
+the game's folder and its size, its own uninstaller if it has one, and its Wine prefix (saves and settings).
+
+- **Uninstall** deletes the game's folder. Turn that off to only remove the game from Beacon and keep its files. Saves
+  and settings stay unless you also turn on **Also delete saves and settings**, which deletes its prefix. Your CD key,
+  resolution and other choices are kept for a reinstall.
+- **Reinstall** deletes the game's files, keeps saves and settings, and takes you to install it again.
+- **Run the game's own uninstaller** shows up when the folder has one (`unins000.exe` and the like).
+- Beacon refuses to delete a Steam copy (uninstall it in Steam), a folder that holds another game, your home folder,
+  Beacon's own data, and top-level or shared folders (`C:\`, `Program Files`, `drive_c`, `Games`…).
+
 ## Windows
 
 Beacon also runs on Windows 10 and 11 (`beacon-app.exe`, with the `beacon.exe` command-line tool next to it). There's
