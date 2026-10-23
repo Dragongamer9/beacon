@@ -38,7 +38,9 @@
         <svg class="art-ridge" viewBox="0 0 1600 300" preserveAspectRatio="none">
           <path d="M0 300 L0 190 L140 150 L260 182 L380 104 L500 160 L620 86 L740 140 L860 98 L980 170 L1100 80 L1220 146 L1340 112 L1460 176 L1600 136 L1600 300 Z"/>
         </svg>
+        <div class="hero-art" id="hero-art"></div>
         <svg class="art-emblem" viewBox="0 0 120 120"><use id="hero-emblem" href="#emblem-bfme1"/></svg>
+        <img class="hero-icon" id="hero-icon" alt="" hidden>
       </div>
       <div class="detail-body">
         <p class="kicker" id="hero-kicker">The Lord of the Rings</p>
@@ -104,6 +106,35 @@
     <div class="rows" id="uninstall-rows"></div>
   </aside>
 
+  <aside class="layer sheet" id="sheet-add" hidden>
+    <header><p class="kicker">Other Games</p><h2>Add a game</h2></header>
+    <div class="rows" id="add-rows"></div>
+  </aside>
+
+  <aside class="layer sheet" id="sheet-custom" hidden>
+    <header><p class="kicker">Game settings</p><h2 data-custom-title></h2></header>
+    <div class="rows" id="custom-rows"></div>
+  </aside>
+
+  <aside class="layer sheet" id="sheet-wine" hidden>
+    <header><p class="kicker" data-custom-title></p><h2>Wine tools</h2></header>
+    <div class="rows" id="wine-rows"></div>
+  </aside>
+
+  <aside class="layer sheet" id="sheet-pick" hidden>
+    <header><p class="kicker" data-custom-title></p><h2>Choose the game's program</h2></header>
+    <div class="rows" id="pick-rows"></div>
+  </aside>
+
+  <aside class="layer sheet" id="sheet-tools" hidden>
+    <header><p class="kicker">Beacon</p><h2>Compatibility tools</h2></header>
+    <div class="rows" id="tools-rows"></div>
+  </aside>
+
+  <aside class="layer sheet" id="sheet-tool" hidden>
+    <header><p class="kicker" id="tool-target"></p><h2 id="tool-name"></h2></header>
+    <div class="rows" id="tool-rows"></div>
+  </aside>
 
   <aside class="layer sheet" id="sheet-launcher" hidden>
     <header><p class="kicker">Beacon</p><h2>Launcher settings</h2></header>
@@ -144,7 +175,19 @@
     <symbol id="i-download" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M12 4v11M7.5 10.5 12 15l4.5-4.5M5 19h14"/></symbol>
     <symbol id="i-x" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M6 6l12 12M18 6 6 18"/></symbol>
 
+    <symbol id="i-wine" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M8 3h8l-.6 5.2A3.4 3.4 0 0 1 12 11.2a3.4 3.4 0 0 1-3.4-3L8 3zM12 11.2V20M8.5 20.5h7"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M5 7h14M10 7V5h4v2M7 7l1 12h8l1-12"/></symbol>
+
     <!-- Original emblems for the game tiles -->
+    <symbol id="emblem-custom" viewBox="0 0 120 120">
+      <rect x="22" y="34" width="76" height="52" rx="16" fill="none" stroke="currentColor" stroke-width="3"/>
+      <path fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" d="M42 52v14M35 59h14"/>
+      <circle cx="76" cy="54" r="4" fill="currentColor"/><circle cx="84" cy="64" r="4" fill="currentColor" opacity=".6"/>
+    </symbol>
+    <symbol id="emblem-add" viewBox="0 0 120 120">
+      <circle cx="60" cy="60" r="38" fill="none" stroke="currentColor" stroke-width="3" stroke-dasharray="6 7"/>
+      <path fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" d="M60 44v32M44 60h32"/>
+    </symbol>
     <symbol id="emblem-bfme1" viewBox="0 0 120 120">
       <path fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round" d="M10 104 44 54l14 16 18-30 34 64z"/>
       <path fill="none" stroke="currentColor" stroke-width="2" opacity=".5" d="M38 104l20-26 10 10 10-14 20 30"/>

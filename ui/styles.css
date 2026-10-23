@@ -196,6 +196,20 @@ button.nav svg { width: 1.2em; height: 1.2em; }
 .nav.focused.play { transform: translateY(-2px) scale(1.03); }
 @media (hover: hover) { .ghost:hover { color: var(--text) !important; } }
 
+/* Games added by hand: their own icon and pictures. */
+.game-row[data-game^="custom:"] { --tile-accent: #e8a33d; }
+.game-row img.swatch.icon { width: 22px; height: 22px; border-radius: 5px; object-fit: contain; background: none; margin: -6px 0; }
+.game-row.add-row .r-title { color: var(--muted); }
+.game-row.add-row .swatch { background: none; border: 1.5px dashed var(--muted); }
+.hero-art { position: absolute; inset: 0; background-size: cover; background-position: center; opacity: 0; transition: opacity 500ms var(--ease); }
+.hero-art.on { opacity: .6; }
+.hero-icon {
+  position: absolute; right: 6%; top: 50%; transform: translateY(-50%); height: 78%; aspect-ratio: 1; object-fit: contain;
+  pointer-events: none; filter: drop-shadow(0 12px 40px rgba(0, 0, 0, .6));
+}
+.cover-thumb { width: 40px; height: 54px; object-fit: cover; border-radius: 6px; }
+.row.danger .label { color: var(--danger); }
+
 /* ---------- hints ---------- */
 .hints { display: flex; gap: 22px; padding: 10px 0 18px; color: var(--muted); font-size: .84em; flex-wrap: wrap; }
 .hint { display: inline-flex; align-items: center; gap: 8px; }

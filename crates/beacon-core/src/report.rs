@@ -70,6 +70,30 @@ pub fn runners(b: &Beacon) -> Value {
     })
 }
 
+/// `custom list`: the games added by hand, with what Beacon's window and Hearth need to show them.
+pub fn custom_list(b: &Beacon) -> Value {
+    json!({
+        "games": value(&b.custom_statuses()),
+        "file": path(&b.custom_file()),
+        "faugus": b.faugus_games_file().as_deref().map(path),
+        "flags": crate::custom::FLAGS.iter().map(|(k, var, _, label)| json!({"key": k, "env": var, "label": label})).collect::<Vec<_>>(),
+        "stores": crate::custom::STORES,
+        "tools": crate::custom::WINE_TOOLS.iter().map(|(k, label)| json!({"key": k, "label": label})).collect::<Vec<_>>(),
+    })
+}
+
+/// `tools list`: `{target, targets, tools: [ToolState], errors, auto_update}`.
+pub fn tools(b: &Beacon, http: &dyn crate::workshop::Http, target: &str, online: bool) -> Value {
+    let (list, errors) = crate::tools::overview(http, &b.paths.home, &b.paths.data_dir, target, online);
+    json!({
+        "target": target,
+        "targets": value(&crate::tools::targets(&b.paths.home)),
+        "tools": value(&list),
+        "errors": errors,
+        "auto_update": b.config.tools_auto_update,
+    })
+}
+
 /// `community <game>`: `{game, chosen, editions: [...], steps: [...]}`.
 pub fn community(b: &Beacon, g: GameId) -> Value {
     let c = b.community(g);

@@ -16,8 +16,10 @@ dirs.workspace = true
 ureq = "2.12"
 # The workshop lists an MD5 for each file.
 md-5 = "0.10"
-# self-update checks the release's SHA256SUMS.
+# Self-update (SHA256SUMS) and compatibility tools (their releases' SHA-256 / SHA-512 checksums).
 sha2 = "0.10"
+# Icons of Windows programs: decoding the .ico put together from the exe's resources, writing PNG.
+ico = "0.3"
 
 [target.'cfg(windows)'.dependencies]
 # Installed games on Windows: the keys the games' installers, EA/Origin and the BFME All-in-One launcher write.

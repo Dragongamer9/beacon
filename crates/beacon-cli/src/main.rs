@@ -5,7 +5,7 @@
 //! "For Hearth / scripting"). Without it, the output is for people, as before.
 
 use anyhow::Result;
-use beacon_core::{aio, community_launcher, editions, games::GameId, media, mods::ModKind, report, workshop, Beacon, Level, Resolution};
+use beacon_core::{aio, community_launcher, custom, editions, games::GameId, media, mods::ModKind, report, tools, workshop, Beacon, Level, Resolution};
 use clap::{Parser, Subcommand};
 use serde_json::{json, Value};
 use std::io::{BufRead, IsTerminal, Write};
@@ -205,6 +205,126 @@ enum Cmd {
         #[command(subcommand)]
         action: Option<private::SourcesAction>,
     },
+    /// Games you add yourself: any Windows program or installer, each in its own Wine prefix (Other Games).
+    Custom {
+        #[command(subcommand)]
+        action: CustomAction,
+    },
+    /// Compatibility tools: download, update and remove Proton, Wine, DXVK and VKD3D-Proton builds for Beacon,
+    /// Steam, Lutris, Heroic and Bottles (from the projects' GitHub releases).
+    Tools {
+        #[command(subcommand)]
+        action: ToolsAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum CustomAction {
+    /// Every game you added, with its state, options, play time and art.
+    List,
+    /// Add a Windows program (.exe) as a game; its icon is taken from the exe.
+    Add {
+        exe: PathBuf,
+        #[arg(long)]
+        title: Option<String>,
+        /// Arguments for the program (quoted).
+        #[arg(long, allow_hyphen_values = true, default_value = "")]
+        args: String,
+        /// Runner id (`beacon runners`); automatic when left out.
+        #[arg(long)]
+        runner: Option<String>,
+    },
+    /// Install a game: run its installer in a new prefix, then list the programs it installed (pick one with
+    /// `custom set <id> exe <path>`).
+    Install {
+        installer: PathBuf,
+        #[arg(long)]
+        title: Option<String>,
+        #[arg(long)]
+        runner: Option<String>,
+    },
+    /// Programs found in a game's prefix (after an install), likeliest first.
+    Candidates { id: String },
+    /// Change one setting: title, exe, args, cwd, prefix, runner (or auto), env KEY=VALUE, dxvk/vkd3d/mangohud/
+    /// gamemode/gamescope on|off, gamescope-args, flag +key/-key, umu-id, store, icon, cover, hero. Put `--` before
+    /// a value that starts with a dash.
+    Set {
+        id: String,
+        key: String,
+        #[arg(allow_hyphen_values = true, default_value = "")]
+        value: String,
+    },
+    /// Start a game. With --wait Beacon stays the parent of the game's processes (Hearth's HEARTH_GAME_ID reaches
+    /// them) and records the play time when it closes.
+    Launch {
+        id: String,
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        wait: bool,
+    },
+    /// Run another Windows program (installer, patch, .msi) in a game's prefix, and wait for it.
+    Run { id: String, exe: PathBuf },
+    /// A Wine tool for a game's prefix: winecfg, winetricks [verbs…], regedit, cmd, taskmgr, explorer, uninstaller,
+    /// control, kill.
+    Tool {
+        id: String,
+        tool: String,
+        verbs: Vec<String>,
+    },
+    /// Remove a game (its play time and art too); --delete-prefix also deletes its Wine prefix when that's safe.
+    Remove {
+        id: String,
+        #[arg(long)]
+        delete_prefix: bool,
+    },
+    /// Save every game you added (and its play time) to a file.
+    Export { file: PathBuf },
+    /// Add games from a Beacon export or a Faugus Launcher games.json.
+    Import { file: PathBuf },
+    /// Add every game from Faugus Launcher (~/.local/share/faugus-launcher or ~/.config/faugus-launcher).
+    ImportFaugus,
+    /// The end of a game's log.
+    Log {
+        id: String,
+        #[arg(long, default_value_t = 200)]
+        lines: usize,
+    },
+}
+
+#[derive(Subcommand)]
+enum ToolsAction {
+    /// Each tool's installed versions and newest release, for one target (beacon, steam, steam-flatpak, lutris,
+    /// lutris-flatpak, heroic, heroic-flatpak, bottles, bottles-flatpak).
+    List {
+        #[arg(long, default_value = "beacon")]
+        target: String,
+        /// Don't ask GitHub; use what it said last.
+        #[arg(long)]
+        offline: bool,
+    },
+    /// A tool's releases on GitHub.
+    Releases { tool: String },
+    /// Download and install a tool: the newest release, a --version (its tag), or --version latest for a
+    /// "<Tool>-Latest" copy that `tools update` keeps on the newest release.
+    Install {
+        tool: String,
+        #[arg(long)]
+        version: Option<String>,
+        #[arg(long, default_value = "beacon")]
+        target: String,
+    },
+    /// Remove an installed copy (its folder name, as `tools list` shows it).
+    Remove {
+        tool: String,
+        name: String,
+        #[arg(long, default_value = "beacon")]
+        target: String,
+    },
+    /// Bring every "Latest" copy, in every launcher, up to its newest release.
+    Update,
+    /// Update "Latest" copies when Beacon's window opens: on or off.
+    AutoUpdate { value: String },
 }
 
 #[derive(Subcommand)]
@@ -719,9 +839,13 @@ fn run(ctx: &Ctx, b: &mut Beacon, cmd: Cmd) -> Result<Value> {
             ctx.say(format!("Started {} (pid {}). Log: {}", g.short(), child.id(), log.display()));
             let mut extra = json!({"pid": child.id(), "log": report::path(&log)});
             if wait {
+                let started = std::time::Instant::now();
                 let st = child.wait()?;
                 ctx.say(format!("Exited: {st}"));
                 extra["exit_code"] = json!(st.code());
+                if let Ok(p) = b.played(g, started.elapsed().as_secs()) {
+                    extra["play_seconds"] = json!(p.seconds);
+                }
             }
             report::ok(Some(g), if wait { "The game closed" } else { "Started" }, extra)
         }
@@ -1022,6 +1146,8 @@ fn run(ctx: &Ctx, b: &mut Beacon, cmd: Cmd) -> Result<Value> {
                 report::ok(Some(g), format!("{} uninstalled", g.short()), json!({"done": report::value(&done)}))
             }
         }
+        Cmd::Custom { action } => run_custom(ctx, b, action)?,
+        Cmd::Tools { action } => run_tools(ctx, b, action)?,
         Cmd::Paths => {
             if !ctx.json {
                 println!("config:   {}", b.paths.config_file.display());
@@ -1030,6 +1156,273 @@ fn run(ctx: &Ctx, b: &mut Beacon, cmd: Cmd) -> Result<Value> {
                 println!("logs:     {}", b.paths.data_dir.join("logs").display());
             }
             report::paths(b)
+        }
+    })
+}
+
+fn custom_id(s: &str) -> Result<String> {
+    if custom::valid_id(s) {
+        Ok(s.to_string())
+    } else {
+        Err(usage(format!("\"{s}\" isn't a game id (see `beacon custom list`)")))
+    }
+}
+
+/// A program's result for a game added by hand: like `program_result`, with the game's id.
+fn custom_program_result(id: &str, st: &std::process::ExitStatus, what: &str, extra: Value) -> Value {
+    let mut v = json!({"ok": st.success(), "game": null, "id": id, "exit_code": st.code()});
+    if st.success() {
+        v["message"] = json!(format!("{what} finished"));
+    } else {
+        let how = st.code().map(|c| format!("code {c}")).unwrap_or_else(|| "it was stopped".into());
+        v["kind"] = json!("program");
+        v["error"] = json!(format!("{what} closed with an error ({how}); see the log"));
+    }
+    if let (Some(o), Value::Object(e)) = (v.as_object_mut(), extra) {
+        for (k, x) in e {
+            o.insert(k, x);
+        }
+    }
+    v
+}
+
+fn fmt_time(secs: u64) -> String {
+    if secs >= 3600 {
+        format!("{:.1} h", secs as f64 / 3600.0)
+    } else {
+        format!("{} min", secs / 60)
+    }
+}
+
+fn run_custom(ctx: &Ctx, b: &mut Beacon, action: CustomAction) -> Result<Value> {
+    // Things the user typed that aren't Beacon's fault are usage errors (exit 2).
+    let bad = |e: anyhow::Error| usage(format!("{e:#}"));
+    Ok(match action {
+        CustomAction::List => {
+            if !ctx.json {
+                let list = b.custom_statuses();
+                if list.is_empty() {
+                    println!("No games added yet. `beacon custom add <program.exe>` or `beacon custom install <setup.exe>`.");
+                }
+                for st in &list {
+                    let mark = if st.ready { "ready" } else if st.installed { "needs attention" } else { "not installed" };
+                    println!("{} — {}  [{}]", st.game.id, st.game.title, mark);
+                    if let Some(e) = &st.game.exe {
+                        println!("    program: {}", e.display());
+                    }
+                    if let Some(r) = &st.resolved_runner {
+                        println!("    runner:  {} ({})", r.name, r.id);
+                    }
+                    println!("    prefix:  {}", st.wineprefix.display());
+                    if st.play_seconds > 0 {
+                        println!("    played:  {}", fmt_time(st.play_seconds));
+                    }
+                    for i in &st.issues {
+                        println!("    {}: {}", if i.level == Level::Error { "error" } else { "note" }, i.message);
+                    }
+                }
+            }
+            report::custom_list(b)
+        }
+        CustomAction::Add { exe, title, args, runner } => {
+            let g = b.custom_add(&exe, title.as_deref(), &args, runner.as_deref()).map_err(bad)?;
+            ctx.say(format!("Added {} ({}){}", g.title, g.id, if g.icon.is_some() { ", with its icon" } else { "" }));
+            json!({"ok": true, "game": null, "id": g.id, "message": format!("Added {}", g.title), "custom": report::value(&b.custom_status(&g))})
+        }
+        CustomAction::Install { installer, title, runner } => {
+            let g = b.custom_install_begin(&installer, title.as_deref(), runner.as_deref()).map_err(bad)?;
+            ctx.progress(Some(5), "Preparing a new Wine prefix");
+            b.custom_prepare(&g)?;
+            let cmd = b.custom_run_command(&g.id, &installer)?;
+            ctx.progress(Some(15), &format!("Running {} — follow its window. Some installers work for a long time without showing progress.", file_name(&installer)));
+            ctx.say(format!("Running {} in a new prefix for {} — follow its window.", installer.display(), g.title));
+            let st = b.custom_spawn(&g.id, &cmd, "install")?.wait()?;
+            ctx.progress(Some(90), "Looking for the game's program");
+            let found = b.exe_candidates(&g);
+            for p in &found {
+                ctx.say(format!("  {}", p.display()));
+            }
+            if !found.is_empty() {
+                ctx.say(format!("Pick the game's program: beacon custom set {} exe <path>", g.id));
+            }
+            custom_program_result(&g.id, &st, &file_name(&installer), json!({"candidates": found.iter().map(|p| report::path(p)).collect::<Vec<_>>(), "custom": report::value(&b.custom_status(&g))}))
+        }
+        CustomAction::Candidates { id } => {
+            let g = b.custom_game(&custom_id(&id)?).map_err(bad)?;
+            let found = b.exe_candidates(&g);
+            for p in &found {
+                ctx.say(p.display().to_string());
+            }
+            json!({"id": g.id, "candidates": found.iter().map(|p| report::path(p)).collect::<Vec<_>>()})
+        }
+        CustomAction::Set { id, key, value } => {
+            let id = custom_id(&id)?;
+            let g = b.custom_set(&id, &key, &value).map_err(bad)?;
+            ctx.say(format!("{}: {key} saved", g.title));
+            json!({"ok": true, "game": null, "id": id, "message": format!("{key} saved"), "custom": report::value(&b.custom_status(&g))})
+        }
+        CustomAction::Launch { id, dry_run, wait } => {
+            let id = custom_id(&id)?;
+            b.custom_game(&id).map_err(bad)?;
+            if dry_run {
+                let cmd = b.custom_launch_command(&id)?;
+                ctx.say(format!("(cd {} && {})", cmd.cwd.display(), cmd.display()));
+                return Ok(json!({"ok": true, "game": null, "id": id, "message": "What Beacon would run", "command": report::command(&cmd)}));
+            }
+            let mut child = b.custom_launch(&id)?;
+            let log = b.custom_log(&id);
+            ctx.say(format!("Started (pid {}). Log: {}", child.id(), log.display()));
+            let mut v = json!({"ok": true, "game": null, "id": id, "message": "Started", "pid": child.id(), "log": report::path(&log)});
+            if wait {
+                let started = std::time::Instant::now();
+                let st = child.wait()?;
+                let p = b.custom_played(&id, started.elapsed().as_secs())?;
+                ctx.say(format!("Exited: {st}. Played {} in all.", fmt_time(p.seconds)));
+                v["message"] = json!("The game closed");
+                v["exit_code"] = json!(st.code());
+                v["play_seconds"] = json!(p.seconds);
+                v["last_played"] = json!(p.last_played);
+            }
+            v
+        }
+        CustomAction::Run { id, exe } => {
+            let id = custom_id(&id)?;
+            let g = b.custom_game(&id).map_err(bad)?;
+            let cmd = b.custom_run_command(&id, &exe).map_err(bad)?;
+            b.custom_prepare(&g)?;
+            ctx.progress(Some(15), &format!("Running {} — follow its window", file_name(&exe)));
+            let st = b.custom_spawn(&id, &cmd, "run")?.wait()?;
+            custom_program_result(&id, &st, &file_name(&exe), json!({}))
+        }
+        CustomAction::Tool { id, tool, verbs } => {
+            let id = custom_id(&id)?;
+            let g = b.custom_game(&id).map_err(bad)?;
+            let cmd = b.custom_tool_command(&id, &tool, &verbs).map_err(bad)?;
+            if tool != "kill" {
+                b.custom_prepare(&g)?;
+            }
+            ctx.progress(Some(15), &format!("Running {tool} in {}'s prefix — follow its window", g.title));
+            let st = b.custom_spawn(&id, &cmd, &tool)?.wait()?;
+            custom_program_result(&id, &st, &tool, json!({"tool": tool}))
+        }
+        CustomAction::Remove { id, delete_prefix } => {
+            let id = custom_id(&id)?;
+            let r = b.custom_remove(&id, delete_prefix).map_err(bad)?;
+            if let Some(p) = &r.deleted_prefix {
+                ctx.say(format!("Removed, and deleted {}", p.display()));
+            } else if let Some(why) = &r.kept_prefix {
+                ctx.say(format!("Removed; its prefix was kept: {why}"));
+            } else {
+                ctx.say("Removed (its prefix was kept)");
+            }
+            json!({"ok": true, "game": null, "id": id, "message": "Removed", "deleted_prefix": r.deleted_prefix.as_deref().map(report::path), "kept_prefix": r.kept_prefix})
+        }
+        CustomAction::Export { file } => {
+            let n = b.custom_export(&file)?;
+            ctx.say(format!("Saved {n} games to {}", file.display()));
+            json!({"ok": true, "game": null, "message": format!("Saved {n} games"), "file": report::path(&file), "count": n})
+        }
+        CustomAction::Import { file } => {
+            let r = b.custom_import(&file).map_err(bad)?;
+            ctx.say(format!("Added {} games{}", r.added.len(), if r.skipped.is_empty() { String::new() } else { format!("; skipped: {}", r.skipped.join(", ")) }));
+            json!({"ok": true, "game": null, "message": format!("Added {} games", r.added.len()), "added": r.added, "skipped": r.skipped})
+        }
+        CustomAction::ImportFaugus => {
+            let r = b.import_faugus()?;
+            ctx.say(format!("Added {} games from Faugus Launcher{}", r.added.len(), if r.skipped.is_empty() { String::new() } else { format!("; skipped: {}", r.skipped.join(", ")) }));
+            json!({"ok": true, "game": null, "message": format!("Added {} games from Faugus Launcher", r.added.len()), "added": r.added, "skipped": r.skipped})
+        }
+        CustomAction::Log { id, lines } => {
+            let id = custom_id(&id)?;
+            let path = b.custom_log(&id);
+            let text = std::fs::read_to_string(&path).unwrap_or_default();
+            let all: Vec<&str> = text.lines().collect();
+            let tail: Vec<&str> = all[all.len().saturating_sub(lines.min(report::LOG_LINES_MAX))..].to_vec();
+            for l in &tail {
+                ctx.say(*l);
+            }
+            json!({"id": id, "path": report::path(&path), "exists": path.is_file(), "lines": tail})
+        }
+    })
+}
+
+fn tool_arg(id: &str) -> Result<&'static tools::Tool> {
+    tools::find(id).ok_or_else(|| usage(format!("unknown tool {id} (one of {})", tools::TOOLS.iter().map(|t| t.id).collect::<Vec<_>>().join(", "))))
+}
+
+fn target_arg(t: &str) -> Result<()> {
+    if tools::valid_target(t) {
+        Ok(())
+    } else {
+        Err(usage(format!("unknown target {t} (beacon, steam, steam-flatpak, lutris, lutris-flatpak, heroic, heroic-flatpak, bottles, bottles-flatpak)")))
+    }
+}
+
+fn run_tools(ctx: &Ctx, b: &mut Beacon, action: ToolsAction) -> Result<Value> {
+    let net = workshop::Net::new();
+    Ok(match action {
+        ToolsAction::List { target, offline } => {
+            target_arg(&target)?;
+            let v = report::tools(b, &net, &target, !offline);
+            if !ctx.json {
+                for t in v["tools"].as_array().into_iter().flatten() {
+                    let inst: Vec<String> = t["installed"].as_array().into_iter().flatten().map(|i| i["name"].as_str().unwrap_or("").to_string()).collect();
+                    println!("{:<22} newest {:<28} {}", t["id"].as_str().unwrap_or(""), t["newest"].as_str().unwrap_or("?"), if inst.is_empty() { "not installed".into() } else { inst.join(", ") });
+                }
+                for e in v["errors"].as_array().into_iter().flatten() {
+                    println!("note: {}", e.as_str().unwrap_or(""));
+                }
+            }
+            v
+        }
+        ToolsAction::Releases { tool } => {
+            let t = tool_arg(&tool)?;
+            let list = tools::releases(&net, &b.paths.data_dir, t, true)?;
+            for r in &list {
+                ctx.say(format!("{:<32} {}{}", r.tag, r.published.get(..10).unwrap_or(""), if r.prerelease { " (pre-release)" } else { "" }));
+            }
+            json!({"tool": t.id, "releases": report::value(&list)})
+        }
+        ToolsAction::Install { tool, version, target } => {
+            let t = tool_arg(&tool)?;
+            target_arg(&target)?;
+            if tools::target_dir(&b.paths.home, &b.paths.data_dir, &target, t.kind).is_none() {
+                return Err(usage(format!("{target} doesn't take {} builds", t.name)));
+            }
+            let latest = version.as_deref() == Some("latest");
+            let tag = version.as_deref().filter(|v| *v != "latest");
+            let d = tools::install(&net, &b.paths.home, &b.paths.data_dir, t, &target, tag, latest, &mut |p: Option<u8>, s: &str| {
+                ctx.progress(p, s);
+                if !ctx.json && p.map(|p| p % 20 == 0 || p >= 96).unwrap_or(false) {
+                    println!("{s}");
+                }
+            })?;
+            b.refresh_runners();
+            ctx.say(format!("Installed {} {} in {}{}", t.name, d.tag, d.path.display(), if d.verified { " (checksum verified)" } else { " (no checksum published)" }));
+            json!({"ok": true, "game": null, "message": format!("{} {} installed", t.name, d.tag), "installed": report::value(&d)})
+        }
+        ToolsAction::Remove { tool, name, target } => {
+            let t = tool_arg(&tool)?;
+            target_arg(&target)?;
+            let p = tools::remove(&b.paths.home, &b.paths.data_dir, &target, t.kind, &name).map_err(|e| usage(format!("{e:#}")))?;
+            ctx.say(format!("Removed {}", p.display()));
+            json!({"ok": true, "game": null, "message": format!("Removed {name}"), "path": report::path(&p)})
+        }
+        ToolsAction::Update => {
+            let done = tools::update_latest(&net, &b.paths.home, &b.paths.data_dir, &mut |p: Option<u8>, s: &str| ctx.progress(p, s))?;
+            for d in &done {
+                ctx.say(format!("Updated {} to {} ({})", d.tool, d.tag, d.path.display()));
+            }
+            if done.is_empty() {
+                ctx.say("Everything installed as Latest is up to date.");
+            }
+            json!({"ok": true, "game": null, "message": if done.is_empty() { "Up to date".to_string() } else { format!("Updated {}", done.len()) }, "updated": report::value(&done)})
+        }
+        ToolsAction::AutoUpdate { value } => {
+            let on = on_off(&value)?;
+            b.config.tools_auto_update = on;
+            b.save()?;
+            json!({"ok": true, "game": null, "message": if on { "Latest copies update when Beacon opens" } else { "Automatic updates off" }, "auto_update": on})
         }
     })
 }
@@ -1168,6 +1561,60 @@ mod tests {
         assert_eq!(s[5]["community_launcher"]["path"], v["path"]);
         assert!(s[5]["community_launcher"]["url"].as_str().unwrap().starts_with("https://drive.google.com/"));
         assert!(s[1].get("community_launcher").is_none());
+    }
+
+    #[test]
+    fn custom_and_tools_parse() {
+        assert!(matches!(parse(&["beacon", "custom", "list", "--json"]).cmd, Some(Cmd::Custom { action: CustomAction::List })));
+        assert!(matches!(parse(&["beacon", "--json", "custom", "launch", "witcher", "--wait"]).cmd, Some(Cmd::Custom { action: CustomAction::Launch { wait: true, dry_run: false, .. } })));
+        assert!(matches!(parse(&["beacon", "custom", "set", "w", "args", "--", "-skipintro"]).cmd, Some(Cmd::Custom { action: CustomAction::Set { ref value, .. } }) if value == "-skipintro"));
+        assert!(matches!(parse(&["beacon", "custom", "set", "w", "flag", "+nvapi"]).cmd, Some(Cmd::Custom { action: CustomAction::Set { .. } })));
+        assert!(matches!(parse(&["beacon", "custom", "tool", "w", "winetricks", "vcrun2019", "d3dx9"]).cmd, Some(Cmd::Custom { action: CustomAction::Tool { ref verbs, .. } }) if verbs.len() == 2));
+        assert!(matches!(parse(&["beacon", "custom", "remove", "w", "--delete-prefix"]).cmd, Some(Cmd::Custom { action: CustomAction::Remove { delete_prefix: true, .. } })));
+        assert!(matches!(parse(&["beacon", "custom", "add", "/g/x.exe", "--title", "X", "--args", "-win"]).cmd, Some(Cmd::Custom { action: CustomAction::Add { .. } })));
+        assert!(matches!(parse(&["beacon", "tools", "install", "ge-proton", "--version", "latest", "--target", "steam"]).cmd, Some(Cmd::Tools { action: ToolsAction::Install { .. } })));
+        assert!(matches!(parse(&["beacon", "tools", "list", "--offline"]).cmd, Some(Cmd::Tools { action: ToolsAction::List { offline: true, .. } })));
+        assert!(Cli::try_parse_from(["beacon", "custom"]).is_err());
+    }
+
+    // Uses the stub `wine`.
+    #[cfg(unix)]
+    #[test]
+    fn custom_games_through_the_cli() {
+        let mut t = setup();
+        let exe = t.games.join("Cool/cool.exe");
+        fs::create_dir_all(exe.parent().unwrap()).unwrap();
+        fs::write(&exe, b"MZ").unwrap();
+        let v = go(&mut t, &["custom", "add", exe.to_str().unwrap(), "--title", "Cool Game"]).unwrap();
+        assert_eq!((v["ok"].as_bool(), v["id"].as_str()), (Some(true), Some("cool-game")));
+        let l = go(&mut t, &["custom", "list"]).unwrap();
+        assert_eq!(l["games"][0]["id"], "cool-game");
+        assert_eq!(l["games"][0]["key"], "custom:cool-game");
+        assert_eq!(l["games"][0]["family"], "other");
+        assert!(l["flags"].as_array().unwrap().iter().any(|f| f["key"] == "nvapi"));
+        assert_eq!(go(&mut t, &["custom", "set", "cool-game", "flag", "+wayland"]).unwrap()["custom"]["flags"][0], "wayland");
+        assert_eq!(exit_code(&go(&mut t, &["custom", "set", "cool-game", "store", "nope"])), 2);
+        assert_eq!(exit_code(&go(&mut t, &["custom", "set", "Bad Id", "store", "gog"])), 2);
+        assert_eq!(exit_code(&go(&mut t, &["custom", "launch", "missing"])), 2);
+        let d = go(&mut t, &["custom", "launch", "cool-game", "--dry-run"]).unwrap();
+        assert!(d["command"]["display"].as_str().unwrap().contains("cool.exe"));
+        assert!(d["command"]["env"].as_array().unwrap().iter().any(|kv| kv[0] == "PROTON_ENABLE_WAYLAND"));
+        let w = go(&mut t, &["custom", "launch", "cool-game", "--wait"]).unwrap();
+        assert_eq!((w["ok"].as_bool(), w["exit_code"].as_i64()), (Some(true), Some(0)));
+        assert!(w["last_played"].as_u64().unwrap() > 0);
+        let file = t.games.join("export.json");
+        assert_eq!(go(&mut t, &["custom", "export", file.to_str().unwrap()]).unwrap()["count"], 1);
+        let r = go(&mut t, &["custom", "remove", "cool-game"]).unwrap();
+        assert!(r["deleted_prefix"].is_null());
+        assert_eq!(go(&mut t, &["custom", "import", file.to_str().unwrap()]).unwrap()["added"][0], "cool-game");
+        assert_eq!(exit_code(&go(&mut t, &["custom", "import-faugus"])), 1);
+        assert_eq!(exit_code(&go(&mut t, &["tools", "install", "nope"])), 2);
+        assert_eq!(exit_code(&go(&mut t, &["tools", "install", "dxvk", "--target", "steam"])), 2, "Steam doesn't take DXVK");
+        assert_eq!(exit_code(&go(&mut t, &["tools", "list", "--target", "nowhere", "--offline"])), 2);
+        let v = go(&mut t, &["tools", "list", "--offline"]).unwrap();
+        assert_eq!(v["targets"][0]["id"], "beacon");
+        assert!(v["tools"].as_array().unwrap().iter().any(|x| x["id"] == "ge-proton" && x["supported"] == true));
+        assert_eq!(go(&mut t, &["tools", "auto-update", "on"]).unwrap()["auto_update"], true);
     }
 
     struct T {

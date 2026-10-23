@@ -251,6 +251,59 @@ The **Version** picker defaults to the community edition whenever one is install
 
 With **Launch through Steam** on, Steam starts its own `player.exe` and the Version picker has no effect. Leave it off to play Expanding Fronts.
 
+## Your own games (Other Games)
+
+Besides the games it knows, Beacon runs **any Windows game or installer you add**: the last tile under Other Games
+(*Add a game*) does it. This is Faugus Launcher's feature set, rebuilt inside Beacon (nothing of Faugus is bundled).
+
+- **Add a Windows program** (.exe). Beacon takes its icon out of the exe and names it after the program (or its folder).
+- **Install from an installer** (setup.exe or .msi). It runs in a new Wine prefix of its own; when it closes, Beacon
+  lists the programs it installed (biggest first, uninstallers and redistributables left out) and you pick the game.
+- **Per game**: title, program, launch arguments, working folder, icon, cover and background pictures; the runner
+  (any of Beacon's: GE-Proton, UMU-Proton and other Proton builds, Steam's Proton, umu-launcher, Wine); its own
+  prefix or one you choose; **GAMEID** and **STORE** for umu-launcher's protonfixes; DXVK and VKD3D-Proton on or off;
+  MangoHud, GameMode and gamescope (with its options; skipped inside a gamescope session such as Hearth's Game Mode);
+  Proton options (NVAPI/DLSS, Wayland, HDR, WoW64, FSR, SDL controllers, esync/fsync off, hide the NVIDIA GPU, large
+  address aware, Proton log); environment variables.
+- **Wine tools** for each prefix: winecfg, winetricks (umu's own when umu-launcher is there, else the system's with the
+  runner's Wine), regedit, a command prompt, task manager, explorer, the uninstaller, control panel, and *stop
+  everything in the prefix*; run another program (an installer, a patch, an .msi) in it.
+- **Play time and last played** are kept for every launch Beacon waits for (`<data>/playtime.json`; Beacon's own games
+  too).
+- **Library**: export everything (with play time) to a file and import it on another PC; import Faugus Launcher's
+  library (`~/.local/share/faugus-launcher/games.json`, or `~/.config/faugus-launcher/` from older versions, or its
+  Flatpak) with its icons, covers, banners and play time; remove a game, optionally deleting its Wine prefix (only
+  when it is one, isn't shared with another game and isn't a top-level folder).
+- **Wine runners and DXVK**: Proton brings DXVK and VKD3D-Proton itself. For plain Wine runners Beacon copies the newest
+  DXVK / VKD3D-Proton you got under Compatibility tools into the prefix and prefers them (`WINEDLLOVERRIDES`).
+
+The list is `custom-games.json` next to `config.json`; Beacon's window and the `beacon` tool read it again before every
+change, so neither undoes the other's. In Hearth these games show in the Library under Beacon's Other Games.
+
+## Compatibility tools
+
+*Launcher → Compatibility tools* (or *Get more runners* in a game's settings) downloads, updates and removes runners,
+like ProtonPlus does, for **Beacon and the other launchers on this PC**: Steam (and its Flatpak), Lutris, Heroic and
+Bottles (native or Flatpak; only the ones that are installed are offered).
+
+| Tool | Kind | Goes to |
+|---|---|---|
+| GE-Proton, UMU-Proton, Proton-CachyOS, Proton-EM, Proton-Sarek | Proton | Beacon, Steam, Lutris, Heroic, Bottles |
+| umu-launcher (zipapp) | runs Proton outside Steam | Beacon |
+| Wine (Kron4ek), Wine Staging (Kron4ek), Wine-GE (archived) | Wine | Beacon, Lutris, Heroic, Bottles |
+| DXVK, DXVK-async (archived) | Direct3D 8–11 | Beacon (Wine runners), Lutris, Bottles |
+| VKD3D-Proton | Direct3D 12 | Beacon (Wine runners), Lutris, Bottles |
+
+- Only each project's **own GitHub releases** are used. A download is checked against the **SHA-256/SHA-512 checksum**
+  its release publishes (GE-Proton, UMU-Proton, Proton-CachyOS, Kron4ek's Wine, …) and thrown away on a mismatch;
+  releases that publish none say so.
+- Each tool shows the version(s) installed in the chosen launcher and the newest release; any release can be installed
+  or removed, with download progress.
+- **Latest**: one `<Tool>-Latest` copy that Beacon keeps on the newest release (*Update “Latest” copies now*, or
+  automatically when Beacon opens). For Steam, its compatibilitytool.vdf gets its own name ("GE-Proton Latest").
+- Everything installed for Beacon (`<data>/compat/`) is a runner straight away, in every game's runner choice, and
+  umu-launcher installed this way is used when there's none on PATH.
+
 ## Mods
 
 The **Mods** sheet (Y on a controller, M on a keyboard) lists everything Beacon knows about for the selected game. Picking one makes it that game's default.
@@ -432,6 +485,33 @@ beacon aio-launcher get bfme1            # install a game through it: opens it, 
 beacon community-launcher uaw status     # UaW's community launcher: where to get it, which one is chosen
 beacon community-launcher uaw set ~/Downloads/UaW_Launcher.zip   # a launcher you downloaded (.exe or .zip)
 beacon community-launcher uaw open       # start it (Linux: in UaW's prefix); `beacon status` finds the game
+
+# Your own games (Other Games)
+beacon custom add ~/Games/Witcher3/bin/x64/witcher3.exe --title "The Witcher 3"
+beacon custom install ~/Downloads/setup_game.exe     # runs it in a new prefix, then lists what it installed
+beacon custom set the-witcher-3 exe ~/.local/share/beacon/prefixes/custom/the-witcher-3/pfx/drive_c/…/game.exe
+beacon custom set the-witcher-3 runner proton:GE-Proton10-25     # or: auto
+beacon custom set the-witcher-3 umu-id umu-292030 && beacon custom set the-witcher-3 store gog
+beacon custom set the-witcher-3 flag +nvapi          # Proton options: +key / -key
+beacon custom set the-witcher-3 env DXVK_HUD=fps     # KEY= removes it
+beacon custom set the-witcher-3 gamescope on && beacon custom set the-witcher-3 gamescope-args "-W 1920 -H 1080 -f"
+beacon custom set the-witcher-3 args -- -skipintro
+beacon custom tool the-witcher-3 winetricks vcrun2019   # also winecfg, regedit, cmd, taskmgr, explorer, uninstaller, control, kill
+beacon custom run the-witcher-3 ~/Downloads/patch.exe
+beacon custom launch the-witcher-3 [--dry-run] [--wait]   # --wait records the play time
+beacon custom list                       # with play time, runner, prefix, issues
+beacon custom export ~/beacon-games.json && beacon custom import ~/beacon-games.json
+beacon custom import-faugus              # everything from Faugus Launcher
+beacon custom remove the-witcher-3 [--delete-prefix]
+
+# Compatibility tools (from the projects' GitHub releases, checksums checked)
+beacon tools list [--target steam]       # beacon, steam, steam-flatpak, lutris(-flatpak), heroic(-flatpak), bottles(-flatpak)
+beacon tools install ge-proton           # newest release, for Beacon
+beacon tools install ge-proton --version latest --target steam   # GE-Proton-Latest in Steam, kept up to date
+beacon tools install dxvk --target lutris
+beacon tools remove ge-proton GE-Proton10-20 --target steam
+beacon tools update                      # every "Latest" copy to its newest release
+beacon tools auto-update on              # …each time Beacon's window opens
 ```
 
 ## For Hearth / scripting
@@ -558,6 +638,20 @@ no runner. Beacon never downloads a community launcher.
 **Windows.** The CLI is `beacon.exe` with the same commands and JSON. `runners` answers in the same shape with the
 `native` runner; `setup` reports `did_work: false`; `paths` still lists the (unused) prefix folders.
 
+### Your own games and compatibility tools (0.0.8)
+
+| Command | Answer |
+|---|---|
+| `custom list` | `{games: [CustomStatus], file, faugus, flags: [{key, env, label}], stores, tools: [{key, label}]}`. Each game: its settings (`id`, `title`, `exe`, `args`, `cwd`, `prefix`, `runner`, `icon`, `cover`, `hero`, `env`, `no_dxvk`, `no_vkd3d`, `mangohud`, `gamemode`, `gamescope`, `gamescope_args`, `flags`, `umu_id`, `store`, `added`, `installer`, `source`) plus `key` (`custom:<id>`), `family` (`other`), `installed`, `ready`, `issues`, `resolved_runner`, `wineprefix`, `prefix_ready`, `own_prefix`, `play_seconds`, `last_played` (Unix time), `sessions`, `log_file`, `has_log`. `icon`/`cover`/`hero` are absolute paths to PNG/JPG/WebP files. |
+| `custom add`, `custom set`, `custom remove`, `custom import`, `custom import-faugus`, `custom export` | `{ok, game: null, id, message, …}`; `add` and `set` include `custom` (the game's CustomStatus). |
+| `custom launch <id> --wait` | Like `launch`: started, then (with `--wait`) `{exit_code, play_seconds, last_played}` when the game closes. Beacon stays the parent of the game's processes, so an environment variable Hearth sets (`HEARTH_GAME_ID`) reaches them. |
+| `custom install`, `custom run`, `custom tool` | Long jobs with progress lines; `{ok, id, exit_code, …}` (`install` adds `candidates`), exit code 3 when the program failed. |
+| `tools list [--target T] [--offline]` | `{target, targets: [{id, name, detected}], tools: [{id, name, kind, repo, blurb, archived, supported, dir, installed: [{name, path, tool, tag, latest, by_beacon}], newest, up_to_date, has_latest}], errors, auto_update}` |
+| `tools releases <tool>` | `{tool, releases: [{tag, name, published, prerelease, asset, url, size, checksum_url}]}` |
+| `tools install`, `tools update` | Progress lines, then `{ok, installed: {tool, target, tag, path, latest, verified, bytes}}` / `{ok, updated: […]}`. |
+
+`status` also has `play_seconds` and `last_played` for each built-in game (from `launch --wait`).
+
 ### Exit codes
 
 | Code | Meaning | `kind` |
@@ -574,6 +668,10 @@ no runner. Beacon never downloads a community launcher.
 - `beacon status --json` and `beacon launch <game>` let Hearth list the games and start them directly. Since 0.0.6
   Hearth also sets games up, changes their settings and manages mods through the JSON commands above, so everything
   Beacon does is in Hearth's Library; Beacon's own window is for outside Hearth.
+- Games you add yourself are listed by `beacon custom list --json` and started with `beacon custom launch <id> --wait`;
+  Hearth shows them in its Library (Beacon › Other Games) with their cover or icon and play time.
+- On an Nvidia GPU, Beacon's window sets `WEBKIT_DISABLE_DMABUF_RENDERER=1` for itself (unless it's already set):
+  WebKitGTK's DMA-BUF renderer crashes the window at start on the 615 driver.
 - `BEACON_CONFIG` and `BEACON_DATA_DIR` move the config file and data folder.
 - Windows (Ember): `beacon.exe` and `beacon-app.exe` sit in the same folder in every Windows package.
 
@@ -586,4 +684,5 @@ no runner. Beacon never downloads a community launcher.
 
 ## License
 
-Beacon is free software, licensed under the **GNU General Public License v3.0 or later** ([LICENSE](LICENSE)). The games it launches, and the community launchers it can set up, belong to their owners and keep their own terms: Beacon never ships or downloads the games themselves.
+Beacon is free software, licensed under the **GNU General Public License v3.0 or later** ([LICENSE](LICENSE)).
+Ideas from Faugus Launcher (MIT) and ProtonPlus (GPL-3.0) are credited in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). The games it launches, and the community launchers it can set up, belong to their owners and keep their own terms: Beacon never ships or downloads the games themselves.

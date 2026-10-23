@@ -5,11 +5,12 @@
 
 use beacon_core::{
     aio_launcher::LauncherStatus,
+    custom::{self, CustomStatus},
     games::GameId,
     media,
     mods::ModEntry,
     runner::{Command, Runner},
-    workshop, Beacon, CatalogItem, Community, GameStatus, Resolution,
+    tools, workshop, Beacon, CatalogItem, Community, GameStatus, Resolution,
 };
 use serde::Serialize;
 use std::collections::BTreeSet;
@@ -24,6 +25,16 @@ mod private;
 struct AppState {
     beacon: Mutex<Beacon>,
     running: Mutex<BTreeSet<GameId>>,
+    /// Games added by hand that are running (or whose installer, tool or program is).
+    running_custom: Mutex<BTreeSet<String>>,
+}
+
+/// A game added by hand, with its icon as a data: URL for the shelf.
+#[derive(Serialize)]
+struct CustomView {
+    #[serde(flatten)]
+    status: CustomStatus,
+    icon_url: Option<String>,
 }
 
 type CmdResult<T> = Result<T, String>;
@@ -41,7 +52,16 @@ struct Snapshot {
     best_runner: Option<String>,
     mods_dir: PathBuf,
     data_dir: PathBuf,
-    running: Vec<GameId>,
+    /// Running games: built-in ids ("rotwk") and "custom:<id>".
+    running: Vec<String>,
+    /// Games added by hand (Other Games).
+    custom: Vec<CustomView>,
+    /// Faugus Launcher's library, when there is one to import.
+    faugus: Option<PathBuf>,
+    flags: Vec<(&'static str, &'static str)>,
+    stores: &'static [&'static str],
+    wine_tools: &'static [(&'static str, &'static str)],
+    tools_auto_update: bool,
     /// Windows: games run directly (no Wine prefixes or runners to pick).
     native: bool,
     /// Where to get the BFME All-in-One launcher.
@@ -60,7 +80,24 @@ fn snapshot(state: &AppState) -> Snapshot {
         best_runner: b.runners.best().map(|r| r.id.clone()),
         mods_dir: b.paths.mods_dir(),
         data_dir: b.paths.data_dir.clone(),
-        running: state.running.lock().unwrap().iter().copied().collect(),
+        running: state
+            .running
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|g| g.slug().to_string())
+            .chain(state.running_custom.lock().unwrap().iter().map(|id| format!("custom:{id}")))
+            .collect(),
+        custom: b
+            .custom_statuses()
+            .into_iter()
+            .map(|status| CustomView { icon_url: status.game.icon.as_deref().and_then(custom::data_url), status })
+            .collect(),
+        faugus: b.faugus_games_file(),
+        flags: custom::FLAGS.iter().map(|(k, _, _, label)| (*k, *label)).collect(),
+        stores: custom::STORES,
+        wine_tools: custom::WINE_TOOLS,
+        tools_auto_update: b.config.tools_auto_update,
         native: b.native,
         aio_url: beacon_core::aio::LAUNCHER_URL,
         aio_launcher: b.launcher_status(),
@@ -496,7 +533,11 @@ fn start(app: AppHandle, state: &AppState, game: GameId, job: Job) -> CmdResult<
                         let _ = w.minimize();
                     }
                 }
+                let started = std::time::Instant::now();
                 let status = child.wait();
+                if !installer {
+                    let _ = beacon.played(game, started.elapsed().as_secs());
+                }
                 if let Some(w) = &window {
                     let _ = w.unminimize();
                     let _ = w.set_focus();
@@ -549,6 +590,296 @@ fn launch_preview(state: State<AppState>, game: GameId, mod_id: Option<String>) 
     Ok(b.launch_command(game, mod_id.as_deref()).map_err(err)?.display())
 }
 
+// ---------------------------------------------------------------- games added by hand (Faugus-style)
+
+#[derive(Clone, Serialize)]
+struct CustomEvent {
+    id: String,
+    /// preparing | running | exited | error
+    phase: &'static str,
+    /// launch | install | run | tool
+    job: &'static str,
+    message: Option<String>,
+}
+
+fn emit_custom(app: &AppHandle, id: &str, job: &'static str, phase: &'static str, message: Option<String>) {
+    let _ = app.emit("custom-event", CustomEvent { id: id.to_string(), phase, job, message });
+}
+
+#[derive(Clone, Serialize)]
+struct InstallDone {
+    id: String,
+    ok: bool,
+    candidates: Vec<String>,
+    message: Option<String>,
+}
+
+enum CustomJob {
+    Launch,
+    Install(PathBuf),
+    Run(PathBuf),
+    Tool(String),
+}
+
+/// Start something for a game added by hand on a thread: the game (play time is recorded when it closes), its
+/// installer (then the programs it installed are offered), another program in its prefix, or a Wine tool.
+fn start_custom(app: AppHandle, state: &AppState, id: String, job: CustomJob) -> CmdResult<()> {
+    let beacon = state.beacon.lock().unwrap().clone();
+    let kind: &'static str = match &job {
+        CustomJob::Launch => "launch",
+        CustomJob::Install(_) => "install",
+        CustomJob::Run(_) => "run",
+        CustomJob::Tool(_) => "tool",
+    };
+    let cmd = match &job {
+        CustomJob::Launch => beacon.custom_launch_command(&id),
+        CustomJob::Install(p) | CustomJob::Run(p) => beacon.custom_run_command(&id, p),
+        CustomJob::Tool(t) => beacon.custom_tool_command(&id, t, &[]),
+    }
+    .map_err(|e| format!("{e:#}"))?;
+    if !state.running_custom.lock().unwrap().insert(id.clone()) {
+        return Err("That game (or something in its prefix) is already running".into());
+    }
+    std::thread::spawn(move || {
+        emit_custom(&app, &id, kind, "preparing", None);
+        let started = beacon
+            .custom_game(&id)
+            .and_then(|g| if matches!(job, CustomJob::Tool(ref t) if t == "kill") { Ok(()) } else { beacon.custom_prepare(&g) })
+            .and_then(|_| beacon.custom_spawn(&id, &cmd, kind));
+        match started {
+            Ok(mut child) => {
+                emit_custom(&app, &id, kind, "running", None);
+                let window = app.get_webview_window("main");
+                if kind == "launch" {
+                    if let Some(w) = &window {
+                        let _ = w.minimize();
+                    }
+                }
+                let t0 = std::time::Instant::now();
+                let status = child.wait();
+                if kind == "launch" {
+                    let _ = beacon.custom_played(&id, t0.elapsed().as_secs());
+                    if let Some(w) = &window {
+                        let _ = w.unminimize();
+                        let _ = w.set_focus();
+                    }
+                }
+                let msg = match &status {
+                    Ok(s) if s.success() => None,
+                    // Installers and tools often end with a code; only the game's own failure is shown.
+                    Ok(s) if kind == "launch" => Some(format!("Exited with {s}. Log: {}", beacon.custom_log(&id).display())),
+                    Ok(_) => None,
+                    Err(e) => Some(e.to_string()),
+                };
+                if let CustomJob::Install(_) = job {
+                    let candidates = beacon.custom_game(&id).map(|g| beacon.exe_candidates(&g)).unwrap_or_default();
+                    let _ = app.emit(
+                        "custom-install-done",
+                        InstallDone { id: id.clone(), ok: status.as_ref().map(|s| s.success()).unwrap_or(false), candidates: candidates.iter().map(|p| p.to_string_lossy().into_owned()).collect(), message: msg.clone() },
+                    );
+                }
+                emit_custom(&app, &id, kind, "exited", msg);
+            }
+            Err(e) => emit_custom(&app, &id, kind, "error", Some(format!("{e:#}"))),
+        }
+        app.state::<AppState>().running_custom.lock().unwrap().remove(&id);
+    });
+    Ok(())
+}
+
+#[tauri::command]
+fn custom_add(state: State<AppState>, path: String, title: Option<String>) -> CmdResult<(Snapshot, String)> {
+    let g = state.beacon.lock().unwrap().custom_add(&PathBuf::from(path), title.as_deref(), "", None).map_err(|e| format!("{e:#}"))?;
+    Ok((snapshot(&state), g.id))
+}
+
+#[tauri::command]
+fn custom_set(state: State<AppState>, id: String, key: String, value: String) -> CmdResult<Snapshot> {
+    state.beacon.lock().unwrap().custom_set(&id, &key, &value).map_err(|e| format!("{e:#}"))?;
+    Ok(snapshot(&state))
+}
+
+#[tauri::command]
+fn custom_remove(state: State<AppState>, id: String, delete_prefix: bool) -> CmdResult<(Snapshot, String)> {
+    if state.running_custom.lock().unwrap().contains(&id) {
+        return Err("Close the game first".into());
+    }
+    let r = state.beacon.lock().unwrap().custom_remove(&id, delete_prefix).map_err(|e| format!("{e:#}"))?;
+    let msg = match (&r.deleted_prefix, &r.kept_prefix) {
+        (Some(_), _) => "Removed, with its Wine prefix".to_string(),
+        (None, Some(why)) if delete_prefix => format!("Removed; its prefix was kept ({why})"),
+        _ => "Removed (its Wine prefix was kept)".to_string(),
+    };
+    Ok((snapshot(&state), msg))
+}
+
+#[tauri::command]
+fn custom_launch(app: AppHandle, state: State<AppState>, id: String) -> CmdResult<()> {
+    start_custom(app.clone(), &state, id, CustomJob::Launch)
+}
+
+/// The install flow: a new game with its own prefix, its installer run there; `custom-install-done` then offers the
+/// programs it installed.
+#[tauri::command]
+fn custom_install(app: AppHandle, state: State<AppState>, path: String, title: Option<String>) -> CmdResult<(Snapshot, String)> {
+    let p = PathBuf::from(&path);
+    let g = state.beacon.lock().unwrap().custom_install_begin(&p, title.as_deref(), None).map_err(|e| format!("{e:#}"))?;
+    start_custom(app.clone(), &state, g.id.clone(), CustomJob::Install(p))?;
+    Ok((snapshot(&state), g.id))
+}
+
+#[tauri::command]
+fn custom_run(app: AppHandle, state: State<AppState>, id: String, path: String) -> CmdResult<()> {
+    start_custom(app.clone(), &state, id, CustomJob::Run(PathBuf::from(path)))
+}
+
+#[tauri::command]
+fn custom_tool(app: AppHandle, state: State<AppState>, id: String, tool: String) -> CmdResult<()> {
+    start_custom(app.clone(), &state, id, CustomJob::Tool(tool))
+}
+
+#[tauri::command]
+fn custom_candidates(state: State<AppState>, id: String) -> CmdResult<Vec<String>> {
+    let b = state.beacon.lock().unwrap();
+    let g = b.custom_game(&id).map_err(|e| format!("{e:#}"))?;
+    Ok(b.exe_candidates(&g).into_iter().map(|p| p.to_string_lossy().into_owned()).collect())
+}
+
+#[tauri::command]
+fn custom_preview(state: State<AppState>, id: String) -> CmdResult<String> {
+    Ok(state.beacon.lock().unwrap().custom_launch_command(&id).map_err(|e| format!("{e:#}"))?.display())
+}
+
+/// The cover and hero pictures (data: URLs), loaded when a game is selected.
+#[tauri::command]
+fn custom_art(state: State<AppState>, id: String) -> serde_json::Value {
+    let g = state.beacon.lock().unwrap().custom_game(&id).ok();
+    let url = |p: Option<&PathBuf>| p.and_then(|p| custom::data_url(p));
+    serde_json::json!({"cover": url(g.as_ref().and_then(|g| g.cover.as_ref())), "hero": url(g.as_ref().and_then(|g| g.hero.as_ref()))})
+}
+
+#[tauri::command]
+async fn custom_export(app: AppHandle) -> CmdResult<Option<String>> {
+    let Some(p) = app.dialog().file().set_file_name("beacon-games.json").add_filter("JSON", &["json"]).blocking_save_file().and_then(|p| p.into_path().ok()) else {
+        return Ok(None);
+    };
+    let n = app.state::<AppState>().beacon.lock().unwrap().custom_export(&p).map_err(|e| format!("{e:#}"))?;
+    Ok(Some(format!("Saved {n} games to {}", p.display())))
+}
+
+#[tauri::command]
+fn custom_import(state: State<AppState>, path: Option<String>) -> CmdResult<(Snapshot, String)> {
+    let r = {
+        let b = state.beacon.lock().unwrap();
+        match path {
+            Some(p) => b.custom_import(&PathBuf::from(p)),
+            None => b.import_faugus(),
+        }
+        .map_err(|e| format!("{e:#}"))?
+    };
+    let msg = match (r.added.len(), r.skipped.len()) {
+        (0, 0) => "Nothing to import".to_string(),
+        (a, 0) => format!("Added {a} game{}", if a == 1 { "" } else { "s" }),
+        (a, s) => format!("Added {a} game{}, skipped {s}", if a == 1 { "" } else { "s" }),
+    };
+    Ok((snapshot(&state), msg))
+}
+
+// ---------------------------------------------------------------- compatibility tools (ProtonPlus-style)
+
+#[tauri::command]
+async fn tools_list(app: AppHandle, target: String, online: bool) -> CmdResult<serde_json::Value> {
+    if !tools::valid_target(&target) {
+        return Err(format!("unknown target {target}"));
+    }
+    let b = app.state::<AppState>().beacon.lock().unwrap().clone();
+    tauri::async_runtime::spawn_blocking(move || beacon_core::report::tools(&b, &workshop::Net::new(), &target, online)).await.map_err(err)
+}
+
+#[tauri::command]
+async fn tools_releases(app: AppHandle, tool: String) -> CmdResult<Vec<tools::Release>> {
+    let t = tools::find(&tool).ok_or_else(|| format!("unknown tool {tool}"))?;
+    let data = app.state::<AppState>().beacon.lock().unwrap().paths.data_dir.clone();
+    tauri::async_runtime::spawn_blocking(move || tools::releases(&workshop::Net::new(), &data, t, false)).await.map_err(err)?.map_err(|e| format!("{e:#}"))
+}
+
+#[derive(Clone, Serialize)]
+struct ToolsProgress {
+    tool: String,
+    pct: Option<u8>,
+    text: String,
+}
+
+/// Download and install a tool (`version`: a tag, "latest" for the self-updating copy, or none for the newest);
+/// progress arrives as `tools-progress`.
+#[tauri::command]
+async fn tools_install(app: AppHandle, tool: String, target: String, version: Option<String>) -> CmdResult<(Snapshot, String)> {
+    let t = tools::find(&tool).ok_or_else(|| format!("unknown tool {tool}"))?;
+    if !tools::valid_target(&target) {
+        return Err(format!("unknown target {target}"));
+    }
+    let (home, data) = {
+        let b = app.state::<AppState>().beacon.lock().unwrap();
+        (b.paths.home.clone(), b.paths.data_dir.clone())
+    };
+    let app2 = app.clone();
+    let tool2 = tool.clone();
+    let done = tauri::async_runtime::spawn_blocking(move || {
+        let latest = version.as_deref() == Some("latest");
+        let tag = version.as_deref().filter(|v| *v != "latest");
+        tools::install(&workshop::Net::new(), &home, &data, t, &target, tag, latest, &mut |pct: Option<u8>, text: &str| {
+            let _ = app2.emit("tools-progress", ToolsProgress { tool: tool2.clone(), pct, text: text.to_string() });
+        })
+    })
+    .await
+    .map_err(err)?
+    .map_err(|e| format!("{e:#}"))?;
+    let state = app.state::<AppState>();
+    state.beacon.lock().unwrap().refresh_runners();
+    let msg = format!("{} {} installed{}", t.name, done.tag, if done.verified { " · checksum verified" } else { " · no checksum published" });
+    Ok((snapshot(&state), msg))
+}
+
+#[tauri::command]
+fn tools_remove(state: State<AppState>, tool: String, target: String, name: String) -> CmdResult<Snapshot> {
+    let t = tools::find(&tool).ok_or_else(|| format!("unknown tool {tool}"))?;
+    {
+        let mut b = state.beacon.lock().unwrap();
+        tools::remove(&b.paths.home, &b.paths.data_dir, &target, t.kind, &name).map_err(|e| format!("{e:#}"))?;
+        b.refresh_runners();
+    }
+    Ok(snapshot(&state))
+}
+
+#[tauri::command]
+async fn tools_update(app: AppHandle) -> CmdResult<(Snapshot, String)> {
+    let (home, data) = {
+        let b = app.state::<AppState>().beacon.lock().unwrap();
+        (b.paths.home.clone(), b.paths.data_dir.clone())
+    };
+    let app2 = app.clone();
+    let done = tauri::async_runtime::spawn_blocking(move || {
+        tools::update_latest(&workshop::Net::new(), &home, &data, &mut |pct: Option<u8>, text: &str| {
+            let _ = app2.emit("tools-progress", ToolsProgress { tool: String::new(), pct, text: text.to_string() });
+        })
+    })
+    .await
+    .map_err(err)?
+    .map_err(|e| format!("{e:#}"))?;
+    let state = app.state::<AppState>();
+    state.beacon.lock().unwrap().refresh_runners();
+    let msg = if done.is_empty() { "Everything is up to date".to_string() } else { format!("Updated {}", done.iter().map(|d| d.tag.as_str()).collect::<Vec<_>>().join(", ")) };
+    Ok((snapshot(&state), msg))
+}
+
+#[tauri::command]
+fn set_tools_auto(state: State<AppState>, on: bool) -> CmdResult<Snapshot> {
+    mutate(&state, |b| {
+        b.config.tools_auto_update = on;
+        Ok(())
+    })
+}
+
 #[tauri::command]
 async fn pick_folder(app: AppHandle) -> Option<String> {
     app.dialog().file().blocking_pick_folder().and_then(|p| p.into_path().ok()).map(|p| p.to_string_lossy().into_owned())
@@ -562,6 +893,9 @@ async fn pick_file(app: AppHandle, kind: String) -> Option<String> {
         "download" => d.add_filter("Download (archive, .exe or .dll)", &["zip", "ZIP", "7z", "rar", "RAR", "tar", "gz", "xz", "exe", "EXE", "dll", "DLL"]),
         "copy" => d.add_filter("Your copy (installer .exe or disc image .iso)", &["exe", "EXE", "msi", "MSI", "iso", "ISO"]),
         "launcher" => d.add_filter("The launcher you downloaded (.exe, .zip, .7z or .rar)", &["exe", "EXE", "zip", "ZIP", "7z", "7Z", "rar", "RAR"]),
+        "game" => d.add_filter("Windows game or installer (.exe, .msi)", &["exe", "EXE", "msi", "MSI"]),
+        "image" => d.add_filter("Picture (.png, .jpg, .webp) or icon (.ico, .exe)", &["png", "PNG", "jpg", "JPG", "jpeg", "webp", "ico", "ICO", "exe", "EXE"]),
+        "json" => d.add_filter("Beacon export or Faugus Launcher games.json", &["json", "JSON"]),
         _ => d.add_filter("Windows program", &["exe", "EXE", "msi", "MSI"]),
     };
     d.blocking_pick_file().and_then(|p| p.into_path().ok()).map(|p| p.to_string_lossy().into_owned())
@@ -712,9 +1046,28 @@ async fn uninstall(app: AppHandle, game: GameId, delete_files: bool, remove_pref
     Ok((snapshot(&state), msg))
 }
 
+/// Whether an Nvidia GPU is in the system: any `<drm>/*/device/vendor` that says 0x10de.
+fn has_nvidia(drm: &std::path::Path) -> bool {
+    std::fs::read_dir(drm)
+        .map(|rd| rd.flatten().any(|e| std::fs::read_to_string(e.path().join("device/vendor")).map(|v| v.trim().eq_ignore_ascii_case("0x10de")).unwrap_or(false)))
+        .unwrap_or(false)
+}
+
+/// WebKitGTK's DMA-BUF renderer crashes Beacon's window at start on Nvidia's driver (615 at least): on an Nvidia
+/// system, use WebKit's older drawing path, unless WEBKIT_DISABLE_DMABUF_RENDERER is already set either way.
+/// Runs before any thread is started.
+#[cfg(target_os = "linux")]
+fn nvidia_webkit_fix() {
+    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() && has_nvidia(std::path::Path::new("/sys/class/drm")) {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
+}
+
 fn main() {
     #[cfg(unix)]
     run_cli_if_asked();
+    #[cfg(target_os = "linux")]
+    nvidia_webkit_fix();
     // Remove what a self-update left behind.
     beacon_core::downloads::selfupdate::cleanup_old();
 
@@ -728,7 +1081,7 @@ fn main() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .manage(AppState { beacon: Mutex::new(beacon), running: Mutex::new(BTreeSet::new()) })
+        .manage(AppState { beacon: Mutex::new(beacon), running: Mutex::new(BTreeSet::new()), running_custom: Mutex::new(BTreeSet::new()) })
         .manage(private::Downloads::default())
         .setup(move |app| {
             if fullscreen {
@@ -738,6 +1091,22 @@ fn main() {
             }
             private::start_background_check(app.handle());
             auto_detect(app.handle());
+            // "Latest" compatibility tools brought up to date in the background, when that's on.
+            let handle = app.handle().clone();
+            if handle.state::<AppState>().beacon.lock().unwrap().config.tools_auto_update {
+                std::thread::spawn(move || {
+                    let (home, data) = {
+                        let b = handle.state::<AppState>().beacon.lock().unwrap();
+                        (b.paths.home.clone(), b.paths.data_dir.clone())
+                    };
+                    if let Ok(done) = tools::update_latest(&workshop::Net::new(), &home, &data, &mut |_: Option<u8>, _: &str| {}) {
+                        if !done.is_empty() {
+                            handle.state::<AppState>().beacon.lock().unwrap().refresh_runners();
+                            let _ = handle.emit("tools-updated", done.len());
+                        }
+                    }
+                });
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -793,7 +1162,43 @@ fn main() {
             look_for_games,
             uninstall_plan,
             uninstall,
+            custom_add,
+            custom_set,
+            custom_remove,
+            custom_launch,
+            custom_install,
+            custom_run,
+            custom_tool,
+            custom_candidates,
+            custom_preview,
+            custom_art,
+            custom_export,
+            custom_import,
+            tools_list,
+            tools_releases,
+            tools_install,
+            tools_remove,
+            tools_update,
+            set_tools_auto,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Beacon");
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn finds_an_nvidia_gpu() {
+        let t = std::env::temp_dir().join(format!("beacon-drm-{}", std::process::id()));
+        let card = |n: &str, vendor: &str| {
+            std::fs::create_dir_all(t.join(n).join("device")).unwrap();
+            std::fs::write(t.join(n).join("device/vendor"), vendor).unwrap();
+        };
+        card("card0", "0x1002\n");
+        assert!(!super::has_nvidia(&t));
+        card("card1", "0x10de\n");
+        assert!(super::has_nvidia(&t));
+        assert!(!super::has_nvidia(&t.join("missing")));
+        let _ = std::fs::remove_dir_all(&t);
+    }
 }

@@ -74,6 +74,8 @@ pub struct Config {
     pub linked_mods: Vec<ModEntry>,
     /// Last mod picked per game (`None`/missing = vanilla).
     pub selected_mod: BTreeMap<GameId, String>,
+    /// Compatibility tools installed as "Latest" are brought up to date when Beacon's window opens.
+    pub tools_auto_update: bool,
 }
 
 impl Default for Config {
@@ -85,6 +87,7 @@ impl Default for Config {
             games: BTreeMap::new(),
             linked_mods: vec![],
             selected_mod: BTreeMap::new(),
+            tools_auto_update: false,
         }
     }
 }
