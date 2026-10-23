@@ -81,6 +81,30 @@ function mockApi() {
     rol: { editions: [], steps: [step("patch", "Latest official patch", "From Rise of Legends Heaven.", "installer"), step("crash-fix", "Long-game crash fix", "Community fix for long sessions.", "merge"), step("user-patch", "User Patch Project", "Community patch in progress.", "link")] },
   };
   const snap = () => structuredClone(state);
+  // Download jobs (private build), like the Rust side: downloads-changed on every change.
+  const jobs = [];
+  let jobId = 0;
+  const pausedJobs = new Set();
+  const jobRun = async (kind, title, game, retry, steps) => {
+    const job = { id: ++jobId, kind, title, game, state: "running", pct: null, text: "Starting", started: Date.now() / 1000, ended: null, message: null, retry };
+    jobs.push(job);
+    emit("downloads-changed", structuredClone(job));
+    for (const [pct, text] of steps) {
+      await delay(700);
+      if (pausedJobs.has(job.id)) {
+        Object.assign(job, { state: "paused", message: "Paused — resume to carry on where it stopped", ended: Date.now() / 1000 });
+        emit("downloads-changed", structuredClone(job));
+        throw "BFME: INI.big: downloading from workshop-files.bfmeladder.com: paused";
+      }
+      Object.assign(job, { pct, text });
+      emit("downloads-changed", structuredClone(job));
+    }
+    return job;
+  };
+  const jobDone = (job, message) => {
+    Object.assign(job, { state: "done", pct: 100, message, ended: Date.now() / 1000 });
+    emit("downloads-changed", structuredClone(job));
+  };
   const dl = { version: 1, built_in: true, sources_repo: "Dragongamer9/beacon-private", games_dir: "/home/you/.local/share/beacon/games", custom_games_dir: false, learned_api: null, checks: null, games: ["bfme1", "bfme2", "rotwk", "rol"], launchers: ["uaw"], archive_launchers: {} };
   const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -207,7 +231,18 @@ function mockApi() {
     },
     // Private build: downloads.
     downloads_info: () => structuredClone(dl),
-    cdn_get: async ({ game: g, repair, acceptGuess }) => {
+    downloads_list: () => structuredClone(jobs),
+    download_pause: ({ id }) => { pausedJobs.add(id); },
+    download_forget: ({ id }) => { const i = jobs.findIndex((j) => j.id === id); if (i >= 0) jobs.splice(i, 1); },
+    downloads_storage: () => ({ bytes: 734003200, files: 3 }),
+    downloads_clear: () => 734003200,
+    cdn_get: async (args) => {
+      const job = await jobRun("game", game(args.game).title, args.game, { cmd: "cdn_get", args }, [[5, "Looking up"], [32, "INI.big"], [61, "Textures.big"], [88, "Maps.big"]]);
+      const r = await handlers.cdn_get_inner(args);
+      jobDone(job, r.message);
+      return r;
+    },
+    cdn_get_inner: async ({ game: g, repair, acceptGuess }) => {
       if (g === "bfme1" && !acceptGuess && !dl.guessed) {
         dl.guessed = true;
         return { result: "needs-confirm", game: g, note: "original-BFME1 is gone; the closest package is original-BFME1-v2 (Vanilla (1.03))" };
@@ -259,7 +294,13 @@ function mockApi() {
     },
     mod_downloads: ({ game: g }) => (g === "rotwk" ? [{ id: "mod-edain", title: "Edain Mod", catalog_id: "edain" }, { id: "mod-edain-launcher", title: "Edain Mod Launcher", catalog_id: null }] : []),
     mod_lookup: async ({ game: g, id, link }) => { await delay(500); return { game: g, name: id === "mod-edain-launcher" ? "Edain Mod Launcher" : link ? "Some Mod" : "Edain Mod", file: "Edain4.8.zip", size: 2861726686, url: "https://www.moddb.com/downloads/mirror/1/2/3", md5: null, install: "library", catalog_id: "edain", note: null }; },
-    mod_install: async ({ found }) => {
+    mod_install: async (args) => {
+      const job = await jobRun("mod", args.found.name, args.found.game, { cmd: "mod_install", args }, [[12, `Downloading ${args.found.file}`], [55, `Downloading ${args.found.file}`]]);
+      const r = await handlers.mod_install_inner(args);
+      jobDone(job, r.message);
+      return r;
+    },
+    mod_install_inner: async ({ found }) => {
       for (const pct of [10, 45, 80, 90, 96]) { emit("mod-progress", { game: found.game, pct, text: pct >= 90 ? "Extracting Edain4.8.zip" : "Downloading Edain4.8.zip" }); await delay(300); }
       const m = { id: `${found.game}:edain-mod`, name: found.name, game: found.game, kind: "mod", path: `/home/you/.local/share/beacon/mods/${found.game}/${found.name}`, args: [], in_library: true };
       mods[found.game].push(m); game(found.game).selected_mod = m.id;

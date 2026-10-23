@@ -212,6 +212,7 @@ function render() {
   if (openSheet === "workshop") renderWorkshopSheet();
   if (openSheet === "game") renderGameSheet();
   if (openSheet === "launcher") renderLauncherSheet();
+  if (openSheet === "downloads") renderDownloadsSheet();
 }
 
 // ---------------------------------------------------------------- actions
@@ -1025,33 +1026,7 @@ function wireCdn(on, g) {
 }
 
 async function cdnGet(g, { repair = false, verify = false, acceptGuess = false }) {
-  if (cdnBusy) return toast(`Already downloading ${snap.games.find((x) => x.id === cdnBusy)?.short ?? cdnBusy}`, true);
-  cdnBusy = g.id;
-  showOverlay({ title: repair || verify ? `Checking ${g.short}'s files…` : `Downloading ${g.short}…`, text: "Looking up the download" });
-  try {
-    const r = await api.call("cdn_get", { game: g.id, repair, verify, acceptGuess });
-    if (r.result === "needs-confirm") {
-      cdnGuess[g.id] = r.note;
-      hideOverlay();
-      render();
-      toast(`${g.short}'s usual download changed — check what Beacon found in Game settings`, true);
-    } else {
-      delete cdnGuess[g.id];
-      snap = r.snapshot;
-      dlInfo = await api.call("downloads_info").catch(() => dlInfo);
-      hideOverlay();
-      render();
-      toast(r.notes?.length ? `${r.message} (${r.notes.join("; ")})` : r.message);
-      // The download held a launcher or installer, not the game: run it in the game's prefix.
-      if (r.launcher) {
-        cdnBusy = null;
-        return runInstaller(g, r.launcher);
-      }
-    }
-  } catch (e) {
-    showOverlay({ title: `Couldn't download ${g.short}`, text: `${String(e?.message ?? e)} — run it again to pick up where it stopped.`, error: true, ok: true });
-  }
-  cdnBusy = null;
+  return runDownload("cdn_get", { game: g.id, repair, verify, acceptGuess }, g, repair || verify ? `${g.short} repair` : g.short);
 }
 
 function onCdnProgress({ pct, text }) {
@@ -1155,27 +1130,7 @@ function launcherDownloadRows(g) {
 }
 
 async function launcherGet(g) {
-  if (clBusy) return;
-  clBusy = g.id;
-  showOverlay({ title: `Getting the ${g.short} launcher…`, text: "Looking for the newest version" });
-  try {
-    const r = await api.call("launcher_get", { game: g.id, force: false, acceptGuess: !!clGuess[g.id] });
-    if (r.result === "needs-confirm") {
-      clGuess[g.id] = r.note;
-      hideOverlay();
-      render();
-      toast(`The ${g.short} launcher's usual file changed — check what Beacon found`, true);
-    } else {
-      delete clGuess[g.id];
-      snap = r.snapshot;
-      hideOverlay();
-      render();
-      toast(r.message);
-    }
-  } catch (e) {
-    showOverlay({ title: `Couldn't get the ${g.short} launcher`, text: `${String(e?.message ?? e)} — "Get the ${g.short} launcher" opens the folder to download it by hand.`, error: true, ok: true });
-  }
-  clBusy = null;
+  return runDownload("launcher_get", { game: g.id, force: false, acceptGuess: !!clGuess[g.id] }, g, `${g.short} launcher`);
 }
 
 // Private build: Beacon updates itself from the private repo's releases.
@@ -1244,28 +1199,140 @@ async function modGet(g, what) {
 
 async function modInstall() {
   const found = modPending;
-  modPending = null;
-  $("#overlay-ok").textContent = "OK";
+  hideOverlay();
   if (!found) return;
   const g = snap.games.find((x) => x.id === found.game);
-  modBusy = true;
-  showOverlay({ title: `Downloading ${found.name}…`, text: found.file });
+  return runDownload("mod_install", { found }, g, found.name);
+}
+
+// ---------------------------------------------------------------- downloads menu (private build)
+// Every download runs in the background as a job; the Downloads menu shows them all with their progress,
+// and can pause (the partial file stays), resume, retry or remove them.
+const jobs = new Map(); // id → job (from downloads_list and downloads-changed)
+const running = new Set(); // "cmd:game:name" of downloads this window started
+let dlStorage = null;
+
+function jobKey(cmd, args) {
+  return `${cmd}:${args.game ?? args.found?.game ?? ""}:${args.found?.name ?? ""}`;
+}
+
+async function runDownload(cmd, args, g, label) {
+  const key = jobKey(cmd, args);
+  if (running.has(key)) return toast(`${label} is already downloading — see Downloads`, true);
+  running.add(key);
+  toast(`Downloading ${label} — progress is in Downloads`);
   try {
-    const r = await api.call("mod_install", { found });
-    snap = r.snapshot;
-    await loadMods(found.game, true).catch(() => {});
-    if (openSheet === "catalog") catalogCache[found.game] = await api.call("get_catalog", { game: found.game }).catch(() => catalogCache[found.game]);
-    hideOverlay();
-    render();
-    toast(r.message);
-    if (r.installed.kind === "installer") {
-      modBusy = false;
-      return runInstaller(g, r.installed.exe);
-    }
+    const r = await api.call(cmd, args);
+    await afterDownload(cmd, g, r);
   } catch (e) {
-    showOverlay({ title: `Couldn't install ${found.name}`, text: `${String(e?.message ?? e)} — run it again to pick up where it stopped.`, error: true, ok: true });
+    const m = String(e?.message ?? e);
+    if (/paused$/.test(m)) toast(`${label} paused — resume it from Downloads`);
+    else toast(`${label}: ${m}`, true);
   }
-  modBusy = false;
+  running.delete(key);
+  if (openSheet === "downloads") loadDlStorage();
+}
+
+// What a finished download means for the screen: new state, a message, maybe a setup to run.
+async function afterDownload(cmd, g, r) {
+  if (r?.result === "needs-confirm") {
+    if (cmd === "cdn_get") cdnGuess[g.id] = r.note;
+    if (cmd === "launcher_get") clGuess[g.id] = r.note;
+    render();
+    return toast(`${g.short}'s usual download changed — check what Beacon found (Downloads or Game settings)`, true);
+  }
+  if (cmd === "cdn_get") delete cdnGuess[g.id];
+  if (cmd === "launcher_get") delete clGuess[g.id];
+  if (r?.snapshot) snap = r.snapshot;
+  if (cmd === "cdn_get") dlInfo = await api.call("downloads_info").catch(() => dlInfo);
+  if (cmd === "mod_install") {
+    await loadMods(g.id, true).catch(() => {});
+    if (catalogCache[g.id]) catalogCache[g.id] = await api.call("get_catalog", { game: g.id }).catch(() => catalogCache[g.id]);
+  }
+  render();
+  if (r?.message) toast(r.notes?.length ? `${r.message} (${r.notes.join("; ")})` : r.message);
+  // The download held a setup program, not the game or mod itself: run it in the game's prefix.
+  const setup = r?.launcher || (r?.installed?.kind === "installer" ? r.installed.exe : null);
+  if (setup) return runInstaller(g, setup);
+}
+
+function updateDlBadge() {
+  const n = [...jobs.values()].filter((j) => j.state === "running").length;
+  const c = $("#dl-count");
+  if (!c) return;
+  c.hidden = !n;
+  c.textContent = n;
+}
+
+async function loadDlStorage() {
+  dlStorage = await api.call("downloads_storage").catch(() => null);
+  if (openSheet === "downloads") renderDownloadsSheet();
+}
+
+async function openDownloads() {
+  for (const j of (await api.call("downloads_list").catch(() => [])) || []) jobs.set(j.id, j);
+  updateDlBadge();
+  open("downloads", $("#sheet-downloads"));
+  loadDlStorage();
+}
+
+const JOB_STATE = { running: ["Downloading", "run"], paused: ["Paused", ""], waiting: ["Needs a yes", "run"], done: ["Done", "ok"], failed: ["Failed", "bad"] };
+const KIND_LABEL = { game: "Game", launcher: "Launcher", mod: "Mod", update: "Beacon" };
+
+function renderDownloadsSheet() {
+  const keep = nav.current()?.dataset.key;
+  const list = [...jobs.values()].sort((a, b) => (a.state === "running") - (b.state === "running") || a.id - b.id).reverse();
+  const rows = $("#downloads-rows");
+  rows.innerHTML = list.length
+    ? list
+        .map((j) => {
+          const [stateLabel, cls] = JOB_STATE[j.state] ?? [j.state, ""];
+          const g = j.game && snap.games.find((x) => x.id === j.game);
+          const sub = j.state === "running" ? `${j.pct != null ? `${j.pct}% · ` : ""}${j.text}` : j.message || j.text;
+          const actions = [
+            j.state === "running" && `<button class="nav" data-key="pause:${j.id}">Pause</button>`,
+            j.state === "paused" && `<button class="nav" data-key="retry:${j.id}">Resume</button>`,
+            j.state === "failed" && `<button class="nav" data-key="retry:${j.id}">Try again</button>`,
+            j.state === "waiting" && `<button class="nav" data-key="accept:${j.id}">Use what Beacon found</button>`,
+            j.state !== "running" && `<button class="nav" data-key="forget:${j.id}">Remove</button>`,
+          ].filter(Boolean);
+          return `<div class="dl-job ${j.state}">
+            <div class="dl-head"><span class="label">${esc(j.title)}</span><span class="badge ${cls}">${esc(stateLabel)}</span></div>
+            ${j.state === "running" ? `<div class="bar${j.pct == null ? " unknown" : ""}"><span style="width:${j.pct ?? 0}%"></span></div>` : ""}
+            <span class="sub">${esc(KIND_LABEL[j.kind] ?? "")}${g ? ` · ${esc(g.short)}` : ""} · ${esc(sub || "")}</span>
+            ${actions.length ? `<div class="dl-actions">${actions.join("")}</div>` : ""}
+          </div>`;
+        })
+        .join("")
+    : `<p class="section-label" style="text-transform:none;letter-spacing:0;font-weight:400">Nothing downloading. Games, launchers, mods and Beacon updates you download show up here, with their progress.</p>`;
+  const kept = dlStorage?.bytes ? `${fmtSize(dlStorage.bytes)} in ${dlStorage.files} file${dlStorage.files === 1 ? "" : "s"}` : "None";
+  $("#downloads-foot").innerHTML =
+    rowHTML({ key: "dl-folder", label: "Kept downloads", sub: `${kept} · partial downloads and setups kept to run again`, value: "Open" }) +
+    (dlStorage?.bytes ? `<button class="nav row-btn danger" data-key="dl-clear"><svg viewBox="0 0 24 24"><use href="#i-x"/></svg>Clear kept downloads</button>` : "");
+  const sheet = $("#sheet-downloads");
+  const on = (key, fn) => sheet.querySelector(`[data-key="${key}"]`)?.addEventListener("click", fn);
+  for (const j of list) {
+    const g = j.game ? snap.games.find((x) => x.id === j.game) : null;
+    on(`pause:${j.id}`, () => act(() => api.call("download_pause", { id: j.id })));
+    on(`retry:${j.id}`, () => (j.retry.cmd === "app_update_apply" ? appUpdate() : runDownload(j.retry.cmd, j.retry.args, g, j.title)));
+    on(`accept:${j.id}`, () => runDownload(j.retry.cmd, { ...j.retry.args, acceptGuess: true }, g, j.title));
+    on(`forget:${j.id}`, async () => {
+      await api.call("download_forget", { id: j.id }).catch(() => {});
+      jobs.delete(j.id);
+      renderDownloadsSheet();
+    });
+  }
+  on("dl-folder", () => act(() => api.call("open_path", { path: `${snap.data_dir}/downloads` })));
+  on("dl-clear", async () => {
+    try {
+      const freed = await api.call("downloads_clear");
+      toast(`Cleared ${fmtSize(freed)}`);
+      loadDlStorage();
+    } catch (e) {
+      toast(String(e?.message ?? e), true);
+    }
+  });
+  nav.refocus(keep ? `[data-key="${CSS.escape(keep)}"]` : null);
 }
 
 function onSourcesChecked({ checks, updated }) {
@@ -1313,6 +1380,7 @@ $("#btn-mods").addEventListener("click", () => loadMods(game().id).then(() => op
 const openGameSheet = () => loadCommunity(game().id).catch(() => {}).then(() => open("game", $("#sheet-game")));
 $("#btn-game-settings").addEventListener("click", openGameSheet);
 $("#btn-launcher-settings").addEventListener("click", openLauncherSheet);
+$("#btn-downloads").addEventListener("click", openDownloads);
 $("#btn-scan").addEventListener("click", scan);
 $("#btn-add-mod-file").addEventListener("click", () => addMod("file"));
 $("#btn-add-mod-folder").addEventListener("click", () => addMod("folder"));
@@ -1370,6 +1438,13 @@ function tick() {
   api.on("aio-launcher-closed", () => refreshAfterAio(true).catch(() => {}));
   api.on("community-launcher-progress", onCommunityLauncherProgress);
   api.on("cdn-progress", onCdnProgress);
+  api.on("downloads-changed", (j) => {
+    jobs.set(j.id, j);
+    updateDlBadge();
+    if (openSheet === "downloads") renderDownloadsSheet();
+  });
+  for (const j of (await api.call("downloads_list").catch(() => [])) || []) jobs.set(j.id, j);
+  updateDlBadge();
   api.on("mod-progress", ({ pct, text }) => {
     if (!modBusy || $("#overlay").hidden) return;
     $("#overlay-text").textContent = pct == null ? text : `${pct}% · ${text}`;

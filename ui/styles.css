@@ -116,8 +116,25 @@ svg { flex: none; }
 .game-row[data-game="exigo"] { --tile-accent: #b48ad6; }
 .game-row[data-game="rol"] { --tile-accent: #d9b44a; }
 .game-row[data-game="swgb"] { --tile-accent: #c4c7d6; }
-.library-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding-top: 12px; border-top: 1px solid var(--line); }
-.library-actions .ghost { justify-content: center; border: 1px solid var(--line) !important; min-height: 44px; }
+.library-actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; padding-top: 12px; border-top: 1px solid var(--line); }
+.library-actions .ghost { justify-content: center; border: 1px solid var(--line) !important; min-height: 44px; padding: 8px 4px; gap: 5px; font-size: .84em; white-space: nowrap; position: relative; }
+.library-actions .count { position: absolute; top: -7px; right: -5px; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 10px; background: var(--ember); color: #1a1208; font-size: .72em; font-weight: 700; display: grid; place-items: center; }
+
+/* ---------- downloads (private build) ---------- */
+.dl-job { display: flex; flex-direction: column; gap: 8px; padding: 14px 16px; border-radius: 12px; background: rgba(239, 227, 200, .04); }
+.dl-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.dl-head .label { font-weight: 700; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dl-job .sub { color: var(--muted); font-size: .84em; word-break: break-word; }
+.dl-job.failed .sub { color: #e8a090; }
+.dl-job .bar { height: 6px; border-radius: 3px; background: rgba(239, 227, 200, .1); overflow: hidden; }
+.dl-job .bar span { display: block; height: 100%; background: var(--ember); border-radius: 3px; transition: width 300ms var(--ease); }
+.dl-job .bar.unknown span { width: 30% !important; animation: slide 1.2s infinite linear; }
+.dl-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.dl-actions .nav { padding: 8px 14px; min-height: 40px; border-radius: 10px; font-size: .86em; font-weight: 700; background: rgba(239, 227, 200, .07) !important; color: var(--text) !important; }
+.badge.ok { color: #b9dba6; border-color: rgba(156, 197, 131, .45); }
+.badge.run { color: var(--ember-hot); border-color: rgba(232, 163, 61, .5); }
+.badge.bad { color: #e8a090; border-color: rgba(224, 115, 92, .5); }
+@keyframes slide { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
 
 /* ---------- detail ---------- */
 .detail { position: relative; min-width: 0; min-height: 0; display: flex; flex-direction: column; padding: clamp(24px, 5vh, 56px) clamp(24px, 4.5vw, 72px) 0; overflow-y: auto; scrollbar-width: none; }

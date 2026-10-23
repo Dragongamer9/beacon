@@ -177,6 +177,89 @@ impl Transfer for Client {
     }
 }
 
+// ---------------------------------------------------------------- pausing
+
+/// A transfer that stops when `flag` is set: the next read fails with "paused", leaving
+/// the `.part` file for a later run to resume from.
+pub struct Cancellable<T: Transfer> {
+    pub inner: T,
+    pub flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// The error a stopped transfer gives.
+pub const PAUSED: &str = "paused";
+
+impl<T: Transfer> Cancellable<T> {
+    pub fn new(inner: T, flag: std::sync::Arc<std::sync::atomic::AtomicBool>) -> Self {
+        Cancellable { inner, flag }
+    }
+    fn stopped(&self) -> bool {
+        self.flag.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+struct StopReader {
+    inner: Box<dyn Read + Send>,
+    flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Read for StopReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.flag.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(std::io::Error::new(std::io::ErrorKind::Interrupted, PAUSED));
+        }
+        self.inner.read(buf)
+    }
+}
+
+impl<T: Transfer> Transfer for Cancellable<T> {
+    fn open(&self, url: &str, offset: u64, headers: &[(&str, String)]) -> Result<(Opened, Box<dyn Read + Send>)> {
+        if self.stopped() {
+            bail!(PAUSED);
+        }
+        let (o, r) = self.inner.open(url, offset, headers)?;
+        Ok((o, Box::new(StopReader { inner: r, flag: self.flag.clone() })))
+    }
+    fn redirect_target(&self, url: &str, headers: &[(&str, String)]) -> Result<Option<String>> {
+        if self.stopped() {
+            bail!(PAUSED);
+        }
+        self.inner.redirect_target(url, headers)
+    }
+}
+
+/// Was this error a pause (not a failure)?
+pub fn is_paused(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| c.to_string() == PAUSED)
+}
+
+/// Bytes kept in the download folders (finished downloads waiting to be used, partial ones, update packages).
+pub fn kept_bytes(store_dir: &Path) -> (u64, usize) {
+    let mut bytes = 0;
+    let mut n = 0;
+    for sub in ["files", "self-update"] {
+        for e in walkdir::WalkDir::new(store_dir.join(sub)).into_iter().flatten() {
+            if e.file_type().is_file() {
+                bytes += e.metadata().map(|m| m.len()).unwrap_or(0);
+                n += 1;
+            }
+        }
+    }
+    (bytes, n)
+}
+
+/// Remove kept downloads (finished and partial) and old update packages.
+pub fn clear_kept(store_dir: &Path) -> Result<u64> {
+    let (bytes, _) = kept_bytes(store_dir);
+    for sub in ["files", "self-update"] {
+        let d = store_dir.join(sub);
+        if d.exists() {
+            std::fs::remove_dir_all(&d).with_context(|| format!("removing {}", d.display()))?;
+        }
+    }
+    Ok(bytes)
+}
+
 // ---------------------------------------------------------------- files
 
 /// One file to fetch.
@@ -538,6 +621,37 @@ mod tests {
         j.size = Some(10);
         j.md5 = None;
         assert!(fetch_file(&net, &j, false, &mut |_| {}).is_err());
+    }
+
+    #[test]
+    fn pausing_keeps_the_part_and_resuming_finishes() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        let t = tempfile::tempdir().unwrap();
+        let body: Vec<u8> = (0..800_000u32).map(|i| (i % 7) as u8).collect();
+        let flag = Arc::new(AtomicBool::new(false));
+        let net = Cancellable::new(FakeNet::with(&[("https://cdn.example/f", &body)]), flag.clone());
+        let j = job(t.path(), "https://cdn.example/f", &body);
+        let f2 = flag.clone();
+        let e = fetch_file(&net, &j, false, &mut |b| {
+            if b > 300_000 {
+                f2.store(true, Ordering::Relaxed);
+            }
+        })
+        .unwrap_err();
+        assert!(is_paused(&e), "{e:#}");
+        let kept = std::fs::metadata(part_path(&j.dest)).unwrap().len();
+        assert!(kept > 300_000 && kept < 800_000);
+        flag.store(false, Ordering::Relaxed);
+        assert!(matches!(fetch_file(&net, &j, false, &mut |_| {}).unwrap(), Fetched::Downloaded { resumed: true, .. }));
+        assert_eq!(std::fs::read(&j.dest).unwrap(), body);
+        let (bytes, n) = kept_bytes(t.path());
+        assert_eq!((bytes, n), (0, 0)); // job() writes under sub/, not files/
+        std::fs::create_dir_all(t.path().join("files/mods")).unwrap();
+        std::fs::write(t.path().join("files/mods/x.zip"), b"1234").unwrap();
+        assert_eq!(kept_bytes(t.path()), (4, 1));
+        assert_eq!(clear_kept(t.path()).unwrap(), 4);
+        assert_eq!(kept_bytes(t.path()), (0, 0));
     }
 
     #[test]

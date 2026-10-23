@@ -696,6 +696,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState { beacon: Mutex::new(beacon), running: Mutex::new(BTreeSet::new()) })
+        .manage(private::Downloads::default())
         .setup(move |app| {
             if fullscreen {
                 if let Some(w) = app.get_webview_window("main") {
@@ -751,6 +752,11 @@ fn main() {
             private::mod_downloads,
             private::mod_lookup,
             private::mod_install,
+            private::downloads_list,
+            private::download_pause,
+            private::download_forget,
+            private::downloads_storage,
+            private::downloads_clear,
             look_for_games,
         ])
         .run(tauri::generate_context!())
