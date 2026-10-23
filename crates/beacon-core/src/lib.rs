@@ -124,7 +124,7 @@ pub struct GameStatus {
     /// chose (`null` until then), `url` = where it's downloaded from. Left out for games without one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub community_launcher: Option<community_launcher::LauncherRef>,
-    // ---- 0.0.8 (play time)
+    // ---- 0.0.18 (play time)
     /// Play time (seconds) and when it last closed (Unix time, 0 = never), from launches Beacon waited for.
     #[serde(default)]
     pub play_seconds: u64,

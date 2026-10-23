@@ -638,7 +638,7 @@ no runner. Beacon never downloads a community launcher.
 **Windows.** The CLI is `beacon.exe` with the same commands and JSON. `runners` answers in the same shape with the
 `native` runner; `setup` reports `did_work: false`; `paths` still lists the (unused) prefix folders.
 
-### Your own games and compatibility tools (0.0.8)
+### Your own games and compatibility tools (0.0.18)
 
 | Command | Answer |
 |---|---|
