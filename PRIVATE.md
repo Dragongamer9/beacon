@@ -39,6 +39,9 @@ Beacon's own downloads. Don't publish its builds.
   - **Pause** stops a download and keeps the partial file; **Resume** carries on from there.
   - A failed download gets **Try again**. A download whose link changed waits for **Use what Beacon found**.
   - **Kept downloads** shows the space taken by partial downloads and kept setups. **Clear kept downloads** frees it.
+- **Reinstall downloads it again.** Game settings → Uninstall or reinstall works as in public Beacon. In this build,
+  **Reinstall** for a game Beacon can download (BFME, BFME II, RotWK, Rise of Legends) deletes its files, keeps saves
+  and settings, and downloads it again straight away, with progress in Downloads.
 - **.7z and .rar too.** Launchers and game archives can be .zip, .7z or .rar, both for downloads and for "Use a
   launcher you downloaded". They're extracted with bsdtar, 7-Zip, or unrar/unar for RAR files that the others can't
   open.

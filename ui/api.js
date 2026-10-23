@@ -310,6 +310,12 @@ function mockApi() {
     set_updates_repo: ({ repo }) => { if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) throw `"${repo}" isn't a GitHub repo (owner/repo)`; dl.sources_repo = repo; return repo; },
     set_games_dir: ({ path }) => { dl.games_dir = path || "/home/you/.local/share/beacon/games"; dl.custom_games_dir = !!path; },
     look_for_games: async () => { await delay(300); return []; },
+    uninstall_plan: ({ game: g }) => ({ game: g, dir: game(g).path, bytes: 5.6e9, can_delete: !game(g).steam_appid, why_not: game(g).steam_appid ? "it's a Steam copy: uninstall it in Steam" : null, uninstaller: g === "bfme2" ? `${game(g).path}/unins000.exe` : null, steam: !!game(g).steam_appid, prefix: `/home/you/.local/share/beacon/prefixes/${g}`, prefix_bytes: 4.2e8, inside_prefix: false, needed_by: g === "bfme2" ? ["rotwk"] : [] }),
+    uninstall: async ({ game: g, deleteFiles, removePrefix }) => {
+      await delay(500);
+      Object.assign(game(g), { path: null, installed: false, ready: false, issues: [{ level: "error", message: "Game folder not set — scan or pick its folder." }] });
+      return [snap(), deleteFiles || removePrefix ? `${game(g).short} uninstalled · 5.6 GB freed` : `${game(g).short} removed from Beacon (its files are still there)`];
+    },
     open_url: () => null,
     pick_folder: async () => { await delay(200); return "/home/you/Games/Picked"; },
     pick_file: async ({ kind }) => { await delay(200); return kind === "mod" ? "/home/you/Downloads/Some Mod.big" : kind === "launcher" ? "/home/you/Downloads/UaW Launcher 1.3.zip" : "/home/you/Downloads/patch.exe"; },
