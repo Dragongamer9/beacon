@@ -304,6 +304,10 @@ pub trait Http {
         self.download(url, &mut buf, max, &mut |_: u64| {})?;
         String::from_utf8(buf).map_err(|_| anyhow!("the answer from {url} isn't text"))
     }
+    /// GET a JSON answer from GitHub's API (compatibility tools' releases), without the workshop's headers.
+    fn get_github(&self, url: &str) -> Result<Value> {
+        self.get_json(url, &[])
+    }
 }
 
 /// The real thing: ureq over rustls, https only, with timeouts.
@@ -332,13 +336,37 @@ impl Default for Net {
 }
 
 fn http_err(e: ureq::Error) -> anyhow::Error {
+    let host = |u: &str| u.split("://").nth(1).and_then(|r| r.split('/').next()).unwrap_or("the server").to_string();
     match e {
-        ureq::Error::Status(code, _) => anyhow!("bfmeladder.com answered HTTP {code}"),
-        ureq::Error::Transport(t) => anyhow!("couldn't reach bfmeladder.com: {t}"),
+        ureq::Error::Status(403, r) | ureq::Error::Status(429, r) if r.get_url().contains("api.github.com") => {
+            anyhow!("GitHub's limit for requests without an account is used up for now (60 an hour); try again in a while")
+        }
+        ureq::Error::Status(code, r) => anyhow!("{} answered HTTP {code}", host(r.get_url())),
+        ureq::Error::Transport(t) => {
+            let h = t.url().map(|u| u.host_str().unwrap_or("the server").to_string()).unwrap_or_else(|| "the server".into());
+            anyhow!("couldn't reach {h}: {t}")
+        }
     }
 }
 
 impl Http for Net {
+    fn get_github(&self, url: &str) -> Result<Value> {
+        if !url.starts_with("https://api.github.com/") {
+            bail!("not a GitHub API address: {url}");
+        }
+        let resp = self
+            .agent
+            .get(url)
+            .timeout(Duration::from_secs(45))
+            .set("Accept", "application/vnd.github+json")
+            .set("X-GitHub-Api-Version", "2022-11-28")
+            .call()
+            .map_err(http_err)?;
+        let mut body = Vec::new();
+        resp.into_reader().take(16 << 20).read_to_end(&mut body).context("reading GitHub's answer")?;
+        serde_json::from_slice(&body).context("GitHub's answer isn't JSON")
+    }
+
     fn get_json(&self, url: &str, query: &[(&str, String)]) -> Result<Value> {
         let mut req = self
             .agent
