@@ -196,12 +196,47 @@ fn proton_dirs(home: &Path) -> Vec<PathBuf> {
 
 /// Find every runner we can use.
 pub fn discover(home: &Path, path_env: &str) -> RunnerSet {
+    discover_with(home, None, path_env)
+}
+
+/// Where Beacon's Compatibility tools screen ([`crate::tools`]) puts the builds it downloads, under its data
+/// folder: Proton builds (GE-Proton, UMU-Proton, Proton-CachyOS…), Wine builds, and umu-launcher itself.
+pub fn beacon_proton_dir(data_dir: &Path) -> PathBuf {
+    data_dir.join("compat/proton")
+}
+pub fn beacon_wine_dir(data_dir: &Path) -> PathBuf {
+    data_dir.join("compat/wine")
+}
+pub fn beacon_umu_dir(data_dir: &Path) -> PathBuf {
+    data_dir.join("compat/umu-launcher")
+}
+
+/// The `umu-run` of an umu-launcher Beacon downloaded (its zipapp: `<dir>/<version>/umu/umu-run`).
+pub fn beacon_umu_run(data_dir: &Path) -> Option<PathBuf> {
+    let base = beacon_umu_dir(data_dir);
+    let mut found: Vec<PathBuf> = walkdir::WalkDir::new(&base)
+        .max_depth(4)
+        .into_iter()
+        .flatten()
+        .filter(|e| e.file_type().is_file() && e.file_name() == "umu-run")
+        .map(|e| e.into_path())
+        .collect();
+    found.sort_by(|a, b| natural_cmp(&b.to_string_lossy(), &a.to_string_lossy()));
+    found.into_iter().next()
+}
+
+/// `discover`, plus the builds Beacon downloaded itself when `data_dir` is given.
+pub fn discover_with(home: &Path, data_dir: Option<&Path>, path_env: &str) -> RunnerSet {
     let mut set = RunnerSet::default();
 
     // Proton builds: any directory with an executable `proton` script inside.
     let mut protons: Vec<Runner> = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
-    for base in proton_dirs(home) {
+    let mut bases = proton_dirs(home);
+    if let Some(d) = data_dir {
+        bases.insert(0, beacon_proton_dir(d));
+    }
+    for base in bases {
         let Ok(rd) = std::fs::read_dir(&base) else { continue };
         for e in rd.flatten() {
             let dir = e.path();
@@ -221,13 +256,28 @@ pub fn discover(home: &Path, path_env: &str) -> RunnerSet {
     protons.sort_by(|a, b| is_ge(b).cmp(&is_ge(a)).then_with(|| natural_cmp(&b.name, &a.name)));
     set.runners.extend(protons);
 
-    if let Some(umu) = which_in("umu-run", path_env) {
+    if let Some(umu) = which_in("umu-run", path_env).or_else(|| data_dir.and_then(beacon_umu_run)) {
         set.runners.push(Runner { id: "umu".into(), name: "umu-launcher (UMU-Proton)".into(), kind: RunnerKind::Umu, path: umu.clone() });
         set.umu = Some(umu);
     }
 
     if let Some(wine) = which_in("wine", path_env) {
         set.runners.push(Runner { id: "wine:system".into(), name: "System Wine".into(), kind: RunnerKind::Wine, path: wine });
+    }
+    // Wine builds Beacon downloaded (Kron4ek, Wine-GE).
+    if let Some(Ok(rd)) = data_dir.map(|d| std::fs::read_dir(beacon_wine_dir(d))) {
+        let mut own: Vec<Runner> = rd
+            .flatten()
+            .filter_map(|e| {
+                let bin = e.path().join("bin/wine");
+                bin.is_file().then(|| {
+                    let name = e.file_name().to_string_lossy().to_string();
+                    Runner { id: format!("wine:beacon:{name}"), name: format!("{name} (Beacon)"), kind: RunnerKind::Wine, path: bin }
+                })
+            })
+            .collect();
+        own.sort_by(|a, b| natural_cmp(&b.name, &a.name));
+        set.runners.extend(own);
     }
     // Lutris-managed Wine builds.
     if let Ok(rd) = std::fs::read_dir(home.join(".local/share/lutris/runners/wine")) {
@@ -313,9 +363,49 @@ pub fn command_for(
     Command { program, args: full_args, env, cwd: cwd.to_path_buf() }
 }
 
+/// `command_for` with the Wine prefix itself (`WINEPREFIX`) instead of Beacon's prefix root: games added by
+/// hand may use a prefix of their own (one from Faugus Launcher, say). A prefix called `pfx` is a Proton-style
+/// one and is handed over as its root; any other folder runs as it is (for Proton without umu-launcher its
+/// compatdata is then the folder itself).
+pub fn command_for_prefix(runner: &Runner, umu: Option<&Path>, home: &Path, wineprefix: &Path, target: &str, args: &[String], cwd: &Path) -> Command {
+    if wineprefix.file_name().map(|n| n == "pfx").unwrap_or(false) {
+        if let Some(root) = wineprefix.parent() {
+            return command_for(runner, umu, home, root, target, args, cwd);
+        }
+    }
+    let mut c = command_for(runner, umu, home, wineprefix, target, args, cwd);
+    let pfx = wineprefix.to_string_lossy().to_string();
+    for (k, v) in c.env.iter_mut() {
+        if k == "WINEPREFIX" {
+            *v = pfx.clone();
+        }
+    }
+    c
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn own_prefixes_and_beacon_builds() {
+        let r = Runner { id: "umu".into(), name: "umu".into(), kind: RunnerKind::Umu, path: "/usr/bin/umu-run".into() };
+        let c = command_for_prefix(&r, None, Path::new("/h"), Path::new("/h/Faugus/game"), "/g/x.exe", &[], Path::new("/g"));
+        assert!(c.env.contains(&("WINEPREFIX".into(), "/h/Faugus/game".into())), "{:?}", c.env);
+        let c = command_for_prefix(&r, None, Path::new("/h"), Path::new("/d/prefixes/custom/x/pfx"), "/g/x.exe", &[], Path::new("/g"));
+        assert!(c.env.contains(&("WINEPREFIX".into(), "/d/prefixes/custom/x/pfx".into())), "{:?}", c.env);
+
+        let t = tempfile::tempdir().unwrap();
+        let data = t.path().join("data");
+        touch_exec(&beacon_proton_dir(&data).join("UMU-Proton-9.0-4e/proton"));
+        touch_exec(&beacon_wine_dir(&data).join("wine-10.12-amd64/bin/wine"));
+        touch_exec(&beacon_umu_dir(&data).join("1.2.9/umu/umu-run"));
+        let set = discover_with(&t.path().join("home"), Some(&data), "");
+        let ids: Vec<_> = set.runners.iter().map(|r| r.id.as_str()).collect();
+        assert!(ids.contains(&"proton:UMU-Proton-9.0-4e") && ids.contains(&"wine:beacon:wine-10.12-amd64") && ids.contains(&"umu"), "{ids:?}");
+        assert!(set.umu.unwrap().ends_with("umu/umu-run"));
+    }
 
     #[test]
     fn natural_sort() {

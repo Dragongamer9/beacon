@@ -47,6 +47,32 @@ function mockApi() {
       download_url: "https://arena-files.bfmeladder.com/application-builds/all-in-one-launcher-main", site: "https://bfmeladder.com", log: "/home/you/.local/share/beacon/logs/aio-launcher.log",
     },
   };
+  const mkCustom = (id, title, extra = {}) => ({
+    id, title, key: `custom:${id}`, family: "other", exe: `/home/you/Games/${title}/${id}.exe`, args: "", cwd: null, prefix: null, runner: null, icon: null, cover: null, hero: null,
+    env: {}, no_dxvk: false, no_vkd3d: false, mangohud: false, gamemode: false, gamescope: false, gamescope_args: "", flags: [], umu_id: null, store: null, added: 0, installer: null, source: null,
+    installed: true, ready: true, issues: [], resolved_runner: runners[0], wineprefix: `/home/you/.local/share/beacon/prefixes/custom/${id}/pfx`, prefix_ready: true, own_prefix: true,
+    play_seconds: 0, last_played: 0, sessions: 0, log_file: `/home/you/.local/share/beacon/logs/custom-${id}.log`, has_log: false, installer_like: false, icon_url: null, ...extra,
+  });
+  state.custom = [
+    mkCustom("the-witcher-3", "The Witcher 3", { play_seconds: 151200, last_played: 1761200000, source: "faugus", umu_id: "umu-292030", store: "gog", flags: ["nvapi"], mangohud: true, env: { DXVK_HUD: "fps" } }),
+    mkCustom("hollow-knight", "Hollow Knight", { play_seconds: 5400, last_played: 1760000000 }),
+  ];
+  state.faugus = "/home/you/.local/share/faugus-launcher/games.json";
+  state.flags = [["nvapi", "NVIDIA NVAPI / DLSS"], ["wayland", "Native Wayland (Proton 10 and newer)"], ["hdr", "HDR (with Wayland)"], ["wow64", "WoW64 (no 32-bit libraries)"], ["fsr", "FSR upscaling for lower resolutions (GE / UMU)"], ["sdl", "Controllers through SDL"]];
+  state.stores = ["none", "steam", "egs", "gog", "amazon", "battlenet", "ea", "humble", "itchio", "ubisoft", "zoomplatform"];
+  state.wine_tools = [["winecfg", "Wine configuration"], ["winetricks", "Winetricks"], ["regedit", "Registry editor"], ["cmd", "Command prompt"], ["taskmgr", "Task manager"], ["explorer", "File explorer"], ["uninstaller", "Uninstall programs"], ["control", "Control panel"], ["kill", "Stop everything in the prefix"]];
+  state.tools_auto_update = false;
+  const cfind = (id) => state.custom.find((c) => c.id === id);
+  const toolList = [
+    ["ge-proton", "GE-Proton", "proton", "GE-Proton10-25", [{ name: "GE-Proton10-24", tag: null, latest: false, by_beacon: false }]],
+    ["umu-proton", "UMU-Proton", "proton", "UMU-Proton-10.0-3", []],
+    ["proton-cachyos", "Proton-CachyOS", "proton", "cachyos-10.0-20251010-slr", []],
+    ["proton-em", "Proton-EM", "proton", "EM-10.0-30", []],
+    ["umu-launcher", "umu-launcher", "umu", "1.2.9", []],
+    ["kron4ek-wine", "Wine (Kron4ek)", "wine", "10.17", []],
+    ["dxvk", "DXVK", "dxvk", "v2.7.1", [{ name: "DXVK-Latest", tag: "v2.7.1", latest: true, by_beacon: true }]],
+    ["vkd3d-proton", "VKD3D-Proton", "vkd3d", "v2.14.1", []],
+  ];
   const workshopItems = {
     rotwk: [
       { id: "6f1c2a7e-0001", name: "Edain Mod", version: "4.8.1", author: "Edain Team", description: "Lore-focused overhaul.", kind: "mod", game: "rotwk", size: 2500000000, downloads: 1234, artwork_url: null, installed: null },
@@ -209,6 +235,47 @@ function mockApi() {
     pick_file: async ({ kind }) => { await delay(200); return kind === "mod" ? "/home/you/Downloads/Some Mod.big" : kind === "launcher" ? "/home/you/Downloads/UaW Launcher 1.3.zip" : "/home/you/Downloads/patch.exe"; },
     open_path: () => null,
     open_log: () => null,
+    custom_add: ({ path }) => { const n = path.split("/").pop().replace(/\.exe$/i, ""); const id = n.toLowerCase().replace(/[^a-z0-9]+/g, "-"); state.custom.push(mkCustom(id, n)); return [snap(), id]; },
+    custom_install: ({ path }) => { const id = "new-game"; state.custom.push(mkCustom(id, "New Game", { exe: null, installer: path, installed: false, ready: false, issues: [{ level: "error", message: "Installed? Choose the game's program (Game settings → Program)." }] })); setTimeout(() => emit("custom-install-done", { id, ok: true, candidates: ["/home/you/.local/share/beacon/prefixes/custom/new-game/pfx/drive_c/Program Files/New Game/NewGame.exe"] }), 1500); return [snap(), id]; },
+    custom_set: ({ id, key, value }) => {
+      const c = cfind(id);
+      const map = { title: "title", args: "args", exe: "exe", cwd: "cwd", "umu-id": "umu_id", store: "store", "gamescope-args": "gamescope_args", prefix: "prefix" };
+      if (map[key]) c[map[key]] = value || null;
+      if (key === "runner") { c.runner = value === "auto" ? null : value; c.resolved_runner = runners.find((r) => r.id === value) || runners[0]; }
+      if (["mangohud", "gamemode", "gamescope"].includes(key)) c[key] = value === "on";
+      if (key === "dxvk") c.no_dxvk = value === "off";
+      if (key === "vkd3d") c.no_vkd3d = value === "off";
+      if (key === "flag") { const f = value.slice(1); c.flags = c.flags.filter((x) => x !== f); if (value[0] === "+") c.flags.push(f); }
+      if (key === "env") { const [k, v] = value.split("="); if (v) c.env[k] = v; else delete c.env[k]; }
+      if (key === "exe" && value) Object.assign(c, { installed: true, ready: true, issues: [] });
+      return snap();
+    },
+    custom_remove: ({ id }) => { state.custom = state.custom.filter((c) => c.id !== id); return [snap(), "Removed (its Wine prefix was kept)"]; },
+    custom_launch: ({ id }) => {
+      setTimeout(() => emit("custom-event", { id, job: "launch", phase: "preparing" }), 50);
+      setTimeout(() => { state.running.push(`custom:${id}`); emit("custom-event", { id, job: "launch", phase: "running" }); }, 1200);
+      setTimeout(() => { state.running = state.running.filter((x) => x !== `custom:${id}`); cfind(id).play_seconds += 600; emit("custom-event", { id, job: "launch", phase: "exited" }); }, 3500);
+    },
+    custom_run: () => null,
+    custom_tool: ({ id }) => { setTimeout(() => emit("custom-event", { id, job: "tool", phase: "running" }), 100); },
+    custom_candidates: () => [],
+    custom_preview: ({ id }) => `WINEPREFIX=${cfind(id).wineprefix} GAMEID=${cfind(id).umu_id || "umu-0"} umu-run '${cfind(id).exe}'`,
+    custom_art: () => ({ cover: null, hero: null }),
+    custom_export: async () => "Saved 2 games to /home/you/beacon-games.json",
+    custom_import: () => [snap(), "Added 3 games"],
+    tools_list: async ({ target }) => {
+      await delay(300);
+      return {
+        target, auto_update: state.tools_auto_update, errors: [],
+        targets: [{ id: "beacon", name: "Beacon", detected: true }, { id: "steam", name: "Steam", detected: true }, { id: "steam-flatpak", name: "Steam (Flatpak)", detected: false }, { id: "lutris", name: "Lutris", detected: true }, { id: "heroic", name: "Heroic", detected: false }, { id: "bottles", name: "Bottles", detected: false }],
+        tools: toolList.filter(([, , k]) => target === "beacon" || k === "proton" || (target === "lutris" && k !== "umu")).map(([id, name, kind, newest, installed]) => ({ id, name, kind, repo: "x/y", blurb: "A compatibility tool.", archived: false, target, supported: true, dir: "/x", installed, newest, up_to_date: installed.some((i) => i.tag === newest), has_latest: installed.some((i) => i.latest) })),
+      };
+    },
+    tools_releases: async () => { await delay(300); return [{ tag: "GE-Proton10-25", name: "GE-Proton10-25", published: "2025-10-20T00:00:00Z", prerelease: false, asset: "GE-Proton10-25.tar.gz", url: "", size: 520000000, checksum_url: "x" }, { tag: "GE-Proton10-24", name: "GE-Proton10-24", published: "2025-10-01T00:00:00Z", prerelease: false, asset: "", url: "", size: 518000000, checksum_url: "x" }]; },
+    tools_install: async ({ tool }) => { for (const p of [10, 50, 86, 96]) { emit("tools-progress", { tool, pct: p, text: p < 86 ? "Downloading GE-Proton GE-Proton10-25 — 260 of 520 MB" : "Checking the download against the release's checksum" }); await delay(300); } return [snap(), "GE-Proton GE-Proton10-25 installed · checksum verified"]; },
+    tools_remove: () => snap(),
+    tools_update: async () => [snap(), "Everything is up to date"],
+    set_tools_auto: ({ on }) => { state.tools_auto_update = on; return snap(); },
   };
 
   return {

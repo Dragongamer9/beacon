@@ -171,6 +171,25 @@ button.nav svg { width: 1.2em; height: 1.2em; }
   background: var(--tile-accent); box-shadow: 0 0 16px var(--tile-accent);
 }
 
+/* Games added by hand: their own icon and pictures. */
+.tile[data-game^="custom:"] { --tile-accent: #e8a33d; }
+.tile[data-game="add"] { --tile-accent: var(--muted); border-style: dashed !important; }
+.tile img.emblem { object-fit: contain; border-radius: 10px; opacity: .95; }
+.hero-icon {
+  position: fixed; z-index: -1; right: calc(var(--gutter) + 2vw); top: 12vh; width: min(30vh, 26vw); height: min(30vh, 26vw);
+  object-fit: contain; opacity: .9; pointer-events: none; filter: drop-shadow(0 12px 40px rgba(0, 0, 0, .6));
+}
+.hero-art {
+  position: absolute; inset: 0; background-size: cover; background-position: center; opacity: 0; transition: opacity 500ms var(--ease);
+  -webkit-mask-image: linear-gradient(180deg, #000 0%, rgba(0, 0, 0, .55) 55%, transparent 100%);
+          mask-image: linear-gradient(180deg, #000 0%, rgba(0, 0, 0, .55) 55%, transparent 100%);
+}
+.hero-art.on { opacity: .32; }
+.cover-thumb { width: 40px; height: 54px; object-fit: cover; border-radius: 6px; }
+.progress-bar { height: 6px; border-radius: 3px; background: rgba(239, 227, 200, .1); overflow: hidden; margin: 0 auto 18px; max-width: 420px; }
+.progress-bar > span { display: block; height: 100%; background: linear-gradient(90deg, var(--ember), var(--ember-hot)); transition: width 300ms var(--ease); }
+.row.danger .label { color: var(--danger); }
+
 /* ---------- hints ---------- */
 .hints { display: flex; gap: 22px; padding: 10px 0 20px; color: var(--muted); font-size: .84em; flex-wrap: wrap; }
 .hint { display: inline-flex; align-items: center; gap: 8px; }

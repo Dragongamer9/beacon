@@ -18,6 +18,7 @@ pub mod aio_launcher;
 pub mod catalog;
 pub mod community_launcher;
 pub mod config;
+pub mod custom;
 pub mod editions;
 pub mod games;
 pub mod installs;
@@ -25,9 +26,12 @@ pub mod media;
 pub mod mods;
 pub mod native;
 pub mod options_ini;
+pub mod pe_icon;
+pub mod playtime;
 pub mod registry;
 pub mod report;
 pub mod runner;
+pub mod tools;
 pub mod workshop;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -117,6 +121,12 @@ pub struct GameStatus {
     /// chose (`null` until then), `url` = where it's downloaded from. Left out for games without one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub community_launcher: Option<community_launcher::LauncherRef>,
+    // ---- 0.0.8 (play time)
+    /// Play time (seconds) and when it last closed (Unix time, 0 = never), from launches Beacon waited for.
+    #[serde(default)]
+    pub play_seconds: u64,
+    #[serde(default)]
+    pub last_played: u64,
 }
 
 /// A catalog entry plus the id of the matching installed mod, if any.
@@ -169,6 +179,8 @@ pub struct Beacon {
     pub runners: RunnerSet,
     /// Windows: games run directly (no Wine prefixes, no regedit import).
     pub native: bool,
+    /// The PATH runners and helpers (gamescope, MangoHud, GameMode, winetricks) are looked up on.
+    pub path_env: String,
 }
 
 /// What `install-from` will run.
@@ -202,14 +214,13 @@ impl Beacon {
     pub fn load_with(paths: Paths, path_env: &str) -> Result<Beacon> {
         let config = Config::load(&paths.config_file)?;
         let native = cfg!(windows);
-        let runners = if native { RunnerSet::native() } else { runner::discover(&paths.home, path_env) };
-        Ok(Beacon { paths, config, runners, native })
+        let runners = if native { RunnerSet::native() } else { runner::discover_with(&paths.home, Some(&paths.data_dir), path_env) };
+        Ok(Beacon { paths, config, runners, native, path_env: path_env.to_string() })
     }
 
     /// Look for runners again (after installing a Proton build, say).
     pub fn refresh_runners(&mut self) {
-        let path_env = std::env::var("PATH").unwrap_or_default();
-        self.runners = if self.native { RunnerSet::native() } else { runner::discover(&self.paths.home, &path_env) };
+        self.runners = if self.native { RunnerSet::native() } else { runner::discover_with(&self.paths.home, Some(&self.paths.data_dir), &self.path_env) };
     }
 
     /// A host path as the game sees it: a `Z:\…` path inside Wine, the path itself on Windows.
@@ -390,6 +401,7 @@ impl Beacon {
         let selected_mod = self.config.selected_mod.get(&g).cloned().filter(|id| self.find_mod(g, id).is_some());
         let needs_setup = if installed && runner.is_some() && !self.via_steam(g) { self.needs_setup(g).ok() } else { None };
         let log_file = self.paths.log_file(g);
+        let stats = playtime::get(&self.playtime_file(), g.slug());
         GameStatus {
             id: g,
             family: g.family(),
@@ -423,7 +435,14 @@ impl Beacon {
             has_community: !editions::editions(g).is_empty() || !editions::steps(g).is_empty(),
             store_url: g.store_url().map(str::to_string),
             community_launcher: self.community_launcher_ref(g),
+            play_seconds: stats.seconds,
+            last_played: stats.last_played,
         }
+    }
+
+    /// Adds a finished session to a game's play time.
+    pub fn played(&self, g: GameId, seconds: u64) -> Result<playtime::PlayStats> {
+        playtime::record(&self.playtime_file(), g.slug(), seconds)
     }
 
     /// Steam app id if this copy sits in a Steam library.
