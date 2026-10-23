@@ -120,7 +120,7 @@ svg { flex: none; }
 .library-actions .ghost { justify-content: center; border: 1px solid var(--line) !important; min-height: 44px; padding: 8px 4px; gap: 5px; font-size: .84em; white-space: nowrap; position: relative; }
 .library-actions .count { position: absolute; top: -7px; right: -5px; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 10px; background: var(--ember); color: #1a1208; font-size: .72em; font-weight: 700; display: grid; place-items: center; }
 
-/* ---------- downloads (private build) ---------- */
+/* ---------- downloads ---------- */
 .dl-job { display: flex; flex-direction: column; gap: 8px; padding: 14px 16px; border-radius: 12px; background: rgba(239, 227, 200, .04); }
 .dl-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .dl-head .label { font-weight: 700; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

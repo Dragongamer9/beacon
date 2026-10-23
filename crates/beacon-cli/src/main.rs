@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 use std::io::{BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
-/// Private build: downloads.
+/// Downloads.
 mod private;
 
 #[derive(Parser)]
@@ -169,7 +169,7 @@ enum Cmd {
         #[command(subcommand)]
         action: CommunityAction,
     },
-    /// Private build: download BFME, BFME II or RotWK from the BFME Foundation's CDN and set it up
+    /// Download BFME, BFME II or RotWK from the BFME Foundation's CDN and set it up
     /// (RotWK brings BFME II along when it's missing), or UaW's newest community launcher from its
     /// Google Drive folder. Resumes where it stopped.
     Get {
@@ -184,7 +184,7 @@ enum Cmd {
         #[arg(long)]
         yes: bool,
     },
-    /// Private build: download a mod or patch inside Beacon (a catalog id with a Download, or any ModDB link) and
+    /// Download a mod or patch inside Beacon (a catalog id with a Download, or any ModDB link) and
     /// put it where it belongs for the game: Beacon's mods, the game's folder, or its installer run in the prefix.
     ModGet {
         game: String,
@@ -194,13 +194,13 @@ enum Cmd {
         #[arg(long)]
         yes: bool,
     },
-    /// Private build: update Beacon itself from the private repo's newest release.
+    /// Update Beacon itself from the newest release on GitHub.
     SelfUpdate {
         /// Only say whether there's a newer version.
         #[arg(long)]
         check: bool,
     },
-    /// Private build: the download sources (list, check, update, token, games-dir).
+    /// The download sources (list, check, update, repo, games-dir).
     Sources {
         #[command(subcommand)]
         action: Option<private::SourcesAction>,
@@ -1108,7 +1108,7 @@ mod tests {
         // The workshop only has BFME, BFME II and RotWK.
         assert_eq!(exit_code(&go(&mut t, &["workshop", "swgb"])), 2);
         assert_eq!(exit_code(&go(&mut t, &["workshop-install", "conquest", "x"])), 2);
-        // Private build: only the BFME games come from the CDN.
+        // Only the BFME games come from the CDN.
         assert_eq!(exit_code(&go(&mut t, &["get", "swgb"])), 2);
         // Base games and EA's patches are refused without asking the server.
         let r = go(&mut t, &["workshop-install", "bfme1", "original-BFME1"]);

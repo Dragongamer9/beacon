@@ -1,4 +1,4 @@
-//! **Private build only.** Public Google Drive folders and files, without an
+//! Public Google Drive folders and files, without an
 //! API key: list a shared folder (its embedded view, or the data the normal
 //! folder page carries), and turn a file id into a link that downloads it
 //! (getting past the "can't scan this file for viruses" page large files get).

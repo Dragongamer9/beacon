@@ -1,4 +1,4 @@
-//! Private build: `beacon get` (games from the BFME Foundation's CDN) and
+//! `beacon get` (games from the BFME Foundation's CDN) and
 //! `beacon sources` (the download list: show, check, update, token, folder).
 
 use super::{game, usage, Ctx};
