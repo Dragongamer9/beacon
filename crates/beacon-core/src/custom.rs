@@ -697,7 +697,8 @@ impl Beacon {
             return Ok(());
         }
         if !pfx.join("drive_c/windows").is_dir() {
-            let cmd = self.custom_command(g, "wineboot", &["-u".into()], &pfx, false)?;
+            let work = pfx.parent().unwrap_or(Path::new("/")).to_path_buf();
+            let cmd = self.custom_command(g, "wineboot", &["-u".into()], &work, false)?;
             let log = self.custom_open_log(&g.id, &cmd, "prefix")?;
             let st = cmd.to_std().stdout(log.try_clone()?).stderr(log).status().with_context(|| format!("starting {}", cmd.program.display()))?;
             if !st.success() {
@@ -766,6 +767,9 @@ impl Beacon {
         }
         let g = self.custom_game(id)?;
         let pfx = self.custom_prefix(&g);
+        // Tools start in the folder holding the prefix (the prefix itself may not exist yet).
+        let work = pfx.parent().unwrap_or(Path::new("/")).to_path_buf();
+        std::fs::create_dir_all(&work)?;
         let r = self.custom_runner(&g).ok_or_else(|| anyhow!("no Wine, Proton or umu-launcher found"))?.clone();
         let target = match tool {
             "winecfg" | "regedit" | "taskmgr" | "control" => tool,
@@ -783,7 +787,7 @@ impl Beacon {
             // umu runs winetricks itself in the prefix (with Proton's Wine); otherwise the system's winetricks with
             // the runner's wine.
             if r.kind == RunnerKind::Umu || (r.kind == RunnerKind::Proton && self.runners.umu.is_some()) {
-                return self.custom_command(&g, "winetricks", extra, &pfx, false);
+                return self.custom_command(&g, "winetricks", extra, &work, false);
             }
             let path_env = self.path_env.clone();
             let wt = runner::which_in("winetricks", &path_env).ok_or_else(|| anyhow!("winetricks isn't installed (or install umu-launcher, which brings its own)"))?;
@@ -802,11 +806,11 @@ impl Beacon {
                 program: wt,
                 args,
                 env: vec![("WINEPREFIX".into(), pfx_s.to_string_lossy().into()), ("WINE".into(), wine.to_string_lossy().into()), ("WINESERVER".into(), wineserver.to_string_lossy().into())],
-                cwd: pfx,
+                cwd: work,
             });
         }
         if tool == "kill" {
-            return self.custom_command(&g, "wineserver", &["-k".into()], &pfx, false).map(|mut c| {
+            return self.custom_command(&g, "wineserver", &["-k".into()], &work, false).map(|mut c| {
                 // Plain Wine: wineserver sits next to wine.
                 if r.kind == RunnerKind::Wine {
                     c.program = r.path.with_file_name("wineserver");
@@ -816,7 +820,7 @@ impl Beacon {
             });
         }
         let args: Vec<String> = if tool == "explorer" { vec!["C:\\".into()] } else { vec![] };
-        self.custom_command(&g, target, &args, &pfx, false)
+        self.custom_command(&g, target, &args, &work, false)
     }
 
     // ---- import / export -----------------------------------------------------------------------------
@@ -1220,6 +1224,8 @@ mod tests {
         assert!(b.custom_status(&g).ready);
     }
 
+    // Faugus Launcher is Linux-only (its paths use ~/).
+    #[cfg(unix)]
     #[test]
     fn export_import_and_faugus() {
         let (t, b, games) = env();
