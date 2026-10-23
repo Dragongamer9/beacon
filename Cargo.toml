@@ -4,7 +4,7 @@ members = ["crates/beacon-core", "crates/beacon-cli", "src-tauri"]
 default-members = ["crates/beacon-core", "crates/beacon-cli"]
 
 [workspace.package]
-version = "0.0.15"
+version = "0.0.16"
 edition = "2021"
 authors = ["Dragongamer9"]
 license = "GPL-3.0-or-later"

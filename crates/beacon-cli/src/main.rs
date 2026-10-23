@@ -121,6 +121,19 @@ enum Cmd {
         #[arg(long, default_value_t = 200)]
         lines: usize,
     },
+    /// Uninstall a game: shows what would be removed; --yes does it. Saves and settings in its Wine prefix stay
+    /// unless --remove-prefix. Without --delete-files the game only leaves Beacon (its files stay).
+    Uninstall {
+        game: String,
+        /// Delete the game's folder (when Beacon can tell it's the game's alone).
+        #[arg(long)]
+        delete_files: bool,
+        /// Also delete its Wine prefix: saves, settings and anything installed in it.
+        #[arg(long)]
+        remove_prefix: bool,
+        #[arg(long)]
+        yes: bool,
+    },
     /// Show where config, prefixes, mods and logs live.
     Paths,
     /// Install a game from your own copy: its installer (.exe), a disc image (.iso) or the disc's folder.
@@ -979,6 +992,36 @@ fn run(ctx: &Ctx, b: &mut Beacon, cmd: Cmd) -> Result<Value> {
         Cmd::Sources { action } => private::sources_cmd(ctx, b, action)?,
         Cmd::SelfUpdate { check } => private::self_update(ctx, b, check)?,
         Cmd::ModGet { game: g, what, yes } => private::mod_get(ctx, b, &g, &what, yes)?,
+        Cmd::Uninstall { game: g, delete_files, remove_prefix, yes } => {
+            let g = game(&g)?;
+            let plan = b.uninstall_plan(g);
+            let size = |n: u64| format!("{:.2} GB", n as f64 / 1e9);
+            if !yes {
+                match &plan.dir {
+                    Some(d) => ctx.say(format!("{}: {} ({})", g.short(), d.display(), size(plan.bytes))),
+                    None => ctx.say(format!("{} has no game folder set.", g.short())),
+                }
+                if let Some(why) = &plan.why_not {
+                    ctx.say(format!("Beacon won't delete its files: {why}."));
+                }
+                if let Some(u) = &plan.uninstaller {
+                    ctx.say(format!("It has its own uninstaller: beacon run {} \"{}\"", g.slug(), u.display()));
+                }
+                if let Some(p) = &plan.prefix {
+                    ctx.say(format!("Its Wine prefix (saves and settings): {} ({})", p.display(), size(plan.prefix_bytes)));
+                }
+                if !plan.needed_by.is_empty() {
+                    ctx.say(format!("Needed by: {}", plan.needed_by.iter().map(|x| x.short()).collect::<Vec<_>>().join(", ")));
+                }
+                ctx.say(format!("Run `beacon uninstall {} --yes` with --delete-files and/or --remove-prefix to go ahead.", g.slug()));
+                report::ok(Some(g), "Uninstall plan", json!({"plan": report::value(&plan)}))
+            } else {
+                let done = b.uninstall(g, delete_files, remove_prefix)?;
+                b.save()?;
+                ctx.say(format!("{} uninstalled ({} freed).", g.short(), size(done.freed)));
+                report::ok(Some(g), format!("{} uninstalled", g.short()), json!({"done": report::value(&done)}))
+            }
+        }
         Cmd::Paths => {
             if !ctx.json {
                 println!("config:   {}", b.paths.config_file.display());
@@ -1034,6 +1077,7 @@ mod tests {
 
     #[test]
     fn new_commands_parse() {
+        assert!(matches!(parse(&["beacon", "uninstall", "bfme2", "--delete-files", "--yes"]).cmd, Some(Cmd::Uninstall { delete_files: true, remove_prefix: false, yes: true, .. })));
         assert!(matches!(parse(&["beacon", "install-from", "bfme2", "/media/BFME2.iso", "--json"]).cmd, Some(Cmd::InstallFrom { .. })));
         assert!(matches!(parse(&["beacon", "workshop", "rotwk"]).cmd, Some(Cmd::Workshop { page: 0, ref search, .. }) if search.is_empty()));
         assert!(matches!(parse(&["beacon", "workshop", "rotwk", "--search", "edain", "--page", "2"]).cmd, Some(Cmd::Workshop { page: 2, .. })));

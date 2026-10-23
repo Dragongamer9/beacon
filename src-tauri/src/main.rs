@@ -679,6 +679,39 @@ async fn look_for_games(app: AppHandle) -> CmdResult<Vec<GameId>> {
     Ok(set.into_iter().map(|f| f.game).collect())
 }
 
+/// What uninstalling a game would remove.
+#[tauri::command]
+async fn uninstall_plan(app: AppHandle, game: GameId) -> CmdResult<beacon_core::uninstall::Plan> {
+    let b = app.state::<AppState>().beacon.lock().unwrap().clone();
+    tauri::async_runtime::spawn_blocking(move || b.uninstall_plan(game)).await.map_err(err)
+}
+
+/// Uninstall a game (not while it's running). Answers the new snapshot and a message.
+#[tauri::command]
+async fn uninstall(app: AppHandle, game: GameId, delete_files: bool, remove_prefix: bool) -> CmdResult<(Snapshot, String)> {
+    if app.state::<AppState>().running.lock().unwrap().contains(&game) {
+        return Err(format!("{} is running; close it first", game.short()));
+    }
+    let mut work = app.state::<AppState>().beacon.lock().unwrap().clone();
+    let done = tauri::async_runtime::spawn_blocking(move || work.uninstall(game, delete_files, remove_prefix).map(|d| (d, work)))
+        .await
+        .map_err(err)?
+        .map_err(|e| format!("{e:#}"))?;
+    let (done, work) = done;
+    let state = app.state::<AppState>();
+    {
+        let mut b = state.beacon.lock().unwrap();
+        b.game_mut(game).path = work.game(game).path;
+        b.save().map_err(err)?;
+    }
+    let freed = done.freed as f64 / 1e9;
+    let msg = match (&done.deleted_dir, &done.deleted_prefix) {
+        (None, None) => format!("{} removed from Beacon (its files are still there)", game.short()),
+        _ => format!("{} uninstalled · {freed:.1} GB freed", game.short()),
+    };
+    Ok((snapshot(&state), msg))
+}
+
 fn main() {
     #[cfg(unix)]
     run_cli_if_asked();
@@ -758,6 +791,8 @@ fn main() {
             private::downloads_storage,
             private::downloads_clear,
             look_for_games,
+            uninstall_plan,
+            uninstall,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Beacon");
